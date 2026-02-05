@@ -2,6 +2,7 @@ import { App, TFile } from 'obsidian';
 import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { CopilotClientManager } from '../copilot-client';
 import { SkillLoader } from '../skill-loader';
+import { TranscriptDetector } from '../transcript';
 
 /**
  * Handles processing of general (non-standup) meetings
@@ -11,12 +12,14 @@ export class GeneralMeetingHandler {
 	private settings: MeetingProcessorSettings;
 	private copilotClient: CopilotClientManager;
 	private skillLoader: SkillLoader;
+	private transcriptDetector: TranscriptDetector;
 
 	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
 		this.app = app;
 		this.settings = settings;
 		this.copilotClient = copilotClient;
 		this.skillLoader = skillLoader;
+		this.transcriptDetector = new TranscriptDetector();
 	}
 
 	/**
@@ -86,9 +89,31 @@ export class GeneralMeetingHandler {
 		
 		const content = await this.app.vault.read(file);
 		
-		// TODO: Detect transcript format
-		// TODO: Apply appropriate cleaning logic
-		// TODO: Update file with cleaned transcript
+		// Extract transcript section
+		const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+		if (!transcriptMatch) {
+			console.log('No transcript section found');
+			return;
+		}
+
+		const transcriptContent = transcriptMatch[1].trim();
+		if (!transcriptContent || transcriptContent.length < 10) {
+			console.log('Transcript section is empty or too short');
+			return;
+		}
+
+		// Detect format and clean
+		const result = this.transcriptDetector.detectAndClean(transcriptContent);
+		console.log(`Cleaned transcript using: ${result.cleaner}`);
+
+		// Replace transcript section
+		const newContent = content.replace(
+			/## Transcript\s*\n[\s\S]*?(?=\n##|$)/,
+			`## Transcript\n\n${result.cleaned}\n\n`
+		);
+
+		await this.app.vault.modify(file, newContent);
+		console.log('Transcript cleaned and saved');
 	}
 
 	/**

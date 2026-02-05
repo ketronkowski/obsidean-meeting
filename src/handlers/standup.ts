@@ -3,6 +3,7 @@ import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { CopilotClientManager } from '../copilot-client';
 import { detectTeam } from '../validators';
 import { SkillLoader } from '../skill-loader';
+import { TranscriptDetector } from '../transcript';
 
 /**
  * Handles processing of standup meetings
@@ -12,12 +13,14 @@ export class StandupMeetingHandler {
 	private settings: MeetingProcessorSettings;
 	private copilotClient: CopilotClientManager;
 	private skillLoader: SkillLoader;
+	private transcriptDetector: TranscriptDetector;
 
 	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
 		this.app = app;
 		this.settings = settings;
 		this.copilotClient = copilotClient;
 		this.skillLoader = skillLoader;
+		this.transcriptDetector = new TranscriptDetector();
 	}
 
 	/**
@@ -116,7 +119,34 @@ export class StandupMeetingHandler {
 
 	private async cleanTranscript(file: TFile): Promise<void> {
 		console.log('Cleaning standup transcript...');
-		// TODO: Apply transcript cleaning
+		
+		const content = await this.app.vault.read(file);
+		
+		// Extract transcript section
+		const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+		if (!transcriptMatch) {
+			console.log('No transcript section found');
+			return;
+		}
+
+		const transcriptContent = transcriptMatch[1].trim();
+		if (!transcriptContent || transcriptContent.length < 10) {
+			console.log('Transcript section is empty or too short');
+			return;
+		}
+
+		// Detect format and clean
+		const result = this.transcriptDetector.detectAndClean(transcriptContent);
+		console.log(`Cleaned transcript using: ${result.cleaner}`);
+
+		// Replace transcript section
+		const newContent = content.replace(
+			/## Transcript\s*\n[\s\S]*?(?=\n##|$)/,
+			`## Transcript\n\n${result.cleaned}\n\n`
+		);
+
+		await this.app.vault.modify(file, newContent);
+		console.log('Transcript cleaned and saved');
 	}
 
 	private async generateSummary(file: TFile): Promise<void> {
