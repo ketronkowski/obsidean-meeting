@@ -24,44 +24,30 @@ export class CopilotClientManager {
 		try {
 			console.log('Initializing Copilot client...');
 			
-			// Try to connect to existing CLI server first (recommended for Obsidian)
-			try {
-				this.client = new CopilotClient({
-					cliUrl: 'localhost:8080',
-					logLevel: 'warning'
-				});
-				
-				await this.client.start();
-				console.log('Connected to existing Copilot CLI server on port 8080');
-				return;
-			} catch (connectError) {
-				console.log('No existing CLI server found, trying to spawn...');
-			}
-			
-			// Fall back to spawning CLI (may not work well in Obsidian)
+			// Use TCP mode (not stdio) which works better in Electron
 			this.client = new CopilotClient({
 				autoStart: true,
-				useStdio: false, // Use TCP instead of stdio
-				port: 8080,
+				useStdio: false, // Important: stdio doesn't work in Obsidian
+				port: 0, // Use random available port
 				logLevel: 'warning'
 			});
 			
 			await this.client.start();
-			console.log('Copilot CLI server started on port 8080');
+			console.log('Copilot client initialized and started successfully');
 		} catch (error) {
 			console.error('Failed to initialize Copilot client:', error);
 			
 			// Provide helpful error message
 			const errorMsg = error.message || String(error);
 			
-			if (errorMsg.includes('stream was destroyed') || errorMsg.includes('ECONNREFUSED')) {
+			if (errorMsg.includes('ENOENT') || errorMsg.includes('not found') || errorMsg.includes('spawn')) {
 				throw new Error(
-					'Could not connect to Copilot CLI. Please start the CLI server manually:\n\n' +
-					'  copilot server --port 8080\n\n' +
-					'Then reload the plugin and try again.'
+					'Copilot CLI not found or cannot be started.\n\n' +
+					'Please ensure:\n' +
+					'1. GitHub Copilot CLI is installed\n' +
+					'2. "copilot" is in your PATH\n' +
+					'3. You are authenticated (run: copilot auth login)'
 				);
-			} else if (errorMsg.includes('ENOENT') || errorMsg.includes('not found')) {
-				throw new Error('Copilot CLI not found. Please ensure GitHub Copilot CLI is installed and in your PATH.');
 			} else if (errorMsg.includes('auth')) {
 				throw new Error('Copilot authentication failed. Please run: copilot auth login');
 			} else {
