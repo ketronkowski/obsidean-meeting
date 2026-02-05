@@ -22,7 +22,9 @@ export default class MeetingProcessorPlugin extends Plugin {
 		this.copilotClient = new CopilotClientManager(this.settings);
 		
 		// Load skills
-		this.skillLoader = new SkillLoader(this.app, this.manifest.dir || '');
+		const pluginDir = (this.manifest as any).dir || '.obsidian/plugins/obsidean-meeting';
+		console.log('Plugin directory:', pluginDir);
+		this.skillLoader = new SkillLoader(this.app, pluginDir);
 		await this.skillLoader.loadAll();
 		
 		this.router = new MeetingRouter(this.app, this.settings, this.copilotClient, this.skillLoader);

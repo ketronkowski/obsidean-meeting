@@ -49,15 +49,14 @@ export class SkillLoader {
 	 * Load a single skill file
 	 */
 	private async loadSkill(filename: string): Promise<void> {
+		// Construct path relative to vault root
+		// Plugin dir is something like: .obsidian/plugins/obsidean-meeting
 		const path = `${this.pluginDir}/skills/${filename}`;
 		
-		// Use fetch to read file from plugin directory
-		const response = await fetch(path);
-		if (!response.ok) {
-			throw new Error(`Failed to fetch ${path}: ${response.statusText}`);
-		}
-
-		const content = await response.text();
+		// Use vault adapter to read file from plugin directory
+		const adapter = this.app.vault.adapter;
+		const content = await adapter.read(path);
+		
 		const skill = this.parseSkill(filename, content);
 		
 		const skillName = filename.replace('.md', '');
