@@ -23,9 +23,11 @@ export class CopilotClientManager {
 
 		try {
 			console.log('Initializing Copilot client...');
+			console.log('CLI path:', this.settings.copilotCliPath);
 			
 			// Use TCP mode (not stdio) which works better in Electron
 			this.client = new CopilotClient({
+				cliPath: this.settings.copilotCliPath,
 				autoStart: true,
 				useStdio: false, // Important: stdio doesn't work in Obsidian
 				port: 0, // Use random available port
@@ -42,11 +44,11 @@ export class CopilotClientManager {
 			
 			if (errorMsg.includes('ENOENT') || errorMsg.includes('not found') || errorMsg.includes('spawn')) {
 				throw new Error(
-					'Copilot CLI not found or cannot be started.\n\n' +
-					'Please ensure:\n' +
-					'1. GitHub Copilot CLI is installed\n' +
-					'2. "copilot" is in your PATH\n' +
-					'3. You are authenticated (run: copilot auth login)'
+					`Copilot CLI not found at: ${this.settings.copilotCliPath}\n\n` +
+					'Please:\n' +
+					'1. Find your copilot path: which copilot\n' +
+					'2. Add the full path to plugin settings\n' +
+					'3. Ensure you are authenticated (run: copilot auth login)'
 				);
 			} else if (errorMsg.includes('auth')) {
 				throw new Error('Copilot authentication failed. Please run: copilot auth login');

@@ -4,6 +4,7 @@ import MeetingProcessorPlugin from '../../main';
 export interface MeetingProcessorSettings {
 	// AI Settings
 	model: string;
+	copilotCliPath: string;
 	
 	// Vault Paths
 	meetingsFolder: string;
@@ -23,6 +24,7 @@ export interface MeetingProcessorSettings {
 
 export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	model: 'claude-sonnet-4',
+	copilotCliPath: 'copilot', // Will be auto-detected or set by user
 	meetingsFolder: 'Meetings',
 	peopleFolder: 'People',
 	mediaFolder: 'Media',
@@ -62,6 +64,17 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.model)
 				.onChange(async (value) => {
 					this.plugin.settings.model = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Copilot CLI Path')
+			.setDesc('Path to copilot executable (leave default or use full path like /Users/you/.nvm/versions/node/v25.2.1/bin/copilot)')
+			.addText(text => text
+				.setPlaceholder('copilot')
+				.setValue(this.plugin.settings.copilotCliPath)
+				.onChange(async (value) => {
+					this.plugin.settings.copilotCliPath = value || 'copilot';
 					await this.plugin.saveSettings();
 				}));
 
