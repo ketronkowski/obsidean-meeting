@@ -124,7 +124,69 @@ export class GeneralMeetingHandler {
 		
 		const content = await this.app.vault.read(file);
 		
-		// TODO: Use Copilot to generate summary
-		// TODO: Update Summary section in file
+		// Get the summary generation skill
+		const summarySkill = this.skillLoader.getSkill('summary-generation');
+		if (!summarySkill) {
+			console.warn('Summary generation skill not found');
+			return;
+		}
+
+		// Extract transcript or Copilot Summary for analysis
+		let contentToSummarize = '';
+		
+		// Check for Copilot Summary first
+		const copilotSummaryMatch = content.match(/## Copilot Summary\s*\n([\s\S]*?)(?=\n##|$)/);
+		if (copilotSummaryMatch && copilotSummaryMatch[1].trim()) {
+			contentToSummarize = copilotSummaryMatch[1].trim();
+			console.log('Using Copilot Summary for analysis');
+		} else {
+			// Use transcript
+			const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+			if (transcriptMatch && transcriptMatch[1].trim()) {
+				contentToSummarize = transcriptMatch[1].trim();
+				console.log('Using transcript for analysis');
+			}
+		}
+
+		if (!contentToSummarize || contentToSummarize.length < 20) {
+			console.log('No content available for summary generation');
+			return;
+		}
+
+		try {
+			// Build prompt with skill instructions
+			const prompt = `${summarySkill.purpose}
+
+${summarySkill.sections.get('Analysis Points') || ''}
+${summarySkill.sections.get('Output Format') || ''}
+${summarySkill.sections.get('Style Guidelines') || ''}
+
+Meeting content to summarize:
+
+${contentToSummarize}
+
+Please generate a comprehensive summary following the format specified above.`;
+
+			// Get summary from Copilot
+			const summary = await this.copilotClient.sendPrompt(prompt);
+			
+			// Update Summary section
+			const summaryRegex = /## Summary\s*\n[\s\S]*?(?=\n##|$)/;
+			let newContent: string;
+			
+			if (summaryRegex.test(content)) {
+				// Replace existing summary
+				newContent = content.replace(summaryRegex, `## Summary\n\n${summary}\n\n`);
+			} else {
+				// Add summary section before last heading or at end
+				newContent = content + `\n\n## Summary\n\n${summary}\n`;
+			}
+
+			await this.app.vault.modify(file, newContent);
+			console.log('Summary generated and saved');
+		} catch (error) {
+			console.error('Error generating summary:', error);
+			throw error;
+		}
 	}
 }

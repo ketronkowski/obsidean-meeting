@@ -30,6 +30,7 @@ const context = await esbuild.context({
 		"@lezer/common",
 		"@lezer/highlight",
 		"@lezer/lr",
+		"@github/copilot-sdk",
 		...builtins
 	],
 	format: "cjs",

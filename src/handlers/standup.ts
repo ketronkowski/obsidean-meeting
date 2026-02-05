@@ -151,7 +151,68 @@ export class StandupMeetingHandler {
 
 	private async generateSummary(file: TFile): Promise<void> {
 		console.log('Generating standup summary...');
-		// TODO: Generate summary via Copilot
+		
+		const content = await this.app.vault.read(file);
+		
+		// Get the summary generation skill
+		const summarySkill = this.skillLoader.getSkill('summary-generation');
+		if (!summarySkill) {
+			console.warn('Summary generation skill not found');
+			return;
+		}
+
+		// Extract transcript or Copilot Summary for analysis
+		let contentToSummarize = '';
+		
+		// Check for Copilot Summary first
+		const copilotSummaryMatch = content.match(/## Copilot Summary\s*\n([\s\S]*?)(?=\n##|$)/);
+		if (copilotSummaryMatch && copilotSummaryMatch[1].trim()) {
+			contentToSummarize = copilotSummaryMatch[1].trim();
+		} else {
+			// Use transcript
+			const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+			if (transcriptMatch && transcriptMatch[1].trim()) {
+				contentToSummarize = transcriptMatch[1].trim();
+			}
+		}
+
+		if (!contentToSummarize || contentToSummarize.length < 20) {
+			console.log('No content available for summary generation');
+			return;
+		}
+
+		try {
+			// Build prompt with skill instructions and standup context
+			const prompt = `This is a standup meeting. ${summarySkill.purpose}
+
+${summarySkill.sections.get('Analysis Points') || ''}
+${summarySkill.sections.get('Output Format') || ''}
+
+Meeting content to summarize:
+
+${contentToSummarize}
+
+Please generate a summary focused on: what was completed yesterday, what's planned for today, and any blockers mentioned.`;
+
+			// Get summary from Copilot
+			const summary = await this.copilotClient.sendPrompt(prompt);
+			
+			// Update Summary section
+			const summaryRegex = /## Summary\s*\n[\s\S]*?(?=\n##|$)/;
+			let newContent: string;
+			
+			if (summaryRegex.test(content)) {
+				newContent = content.replace(summaryRegex, `## Summary\n\n${summary}\n\n`);
+			} else {
+				newContent = content + `\n\n## Summary\n\n${summary}\n`;
+			}
+
+			await this.app.vault.modify(file, newContent);
+			console.log('Standup summary generated and saved');
+		} catch (error) {
+			console.error('Error generating summary:', error);
+			throw error;
+		}
 	}
 
 	private async extractJiraUpdates(file: TFile, content: string): Promise<void> {

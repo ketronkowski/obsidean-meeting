@@ -1,25 +1,5 @@
+import { CopilotClient } from '@github/copilot-sdk';
 import { MeetingProcessorSettings } from './ui/settings-tab';
-
-/**
- * Interface for Copilot SDK (will be implemented when SDK is available)
- * For now, this is a placeholder that can be swapped for the real SDK
- */
-interface CopilotClient {
-	createSession(options: { model: string }): Promise<CopilotSession>;
-	stop(): Promise<void>;
-}
-
-interface CopilotSession {
-	sendAndWait(request: { prompt: string; context?: any }): Promise<CopilotResponse>;
-	close(): Promise<void>;
-}
-
-interface CopilotResponse {
-	data: {
-		content: string;
-		[key: string]: any;
-	};
-}
 
 /**
  * Manages Copilot SDK client lifecycle
@@ -27,7 +7,7 @@ interface CopilotResponse {
 export class CopilotClientManager {
 	private settings: MeetingProcessorSettings;
 	private client: CopilotClient | null = null;
-	private session: CopilotSession | null = null;
+	private activeSession: any | null = null;
 
 	constructor(settings: MeetingProcessorSettings) {
 		this.settings = settings;
@@ -42,64 +22,96 @@ export class CopilotClientManager {
 		}
 
 		try {
-			// TODO: Replace with actual SDK import when available
-			// const { CopilotClient } = await import('@github/copilot-sdk');
-			// this.client = new CopilotClient();
+			this.client = new CopilotClient({
+				autoStart: true,
+				useStdio: true,
+				logLevel: 'info'
+			});
 			
-			// For now, throw an error indicating SDK not yet integrated
-			throw new Error('Copilot SDK integration pending');
+			await this.client.start();
+			console.log('Copilot client initialized successfully');
 		} catch (error) {
 			console.error('Failed to initialize Copilot client:', error);
-			throw error;
+			throw new Error(`Copilot client initialization failed: ${error.message}`);
 		}
 	}
 
 	/**
 	 * Create a new session with the configured model
 	 */
-	async createSession(): Promise<CopilotSession> {
+	async createSession(): Promise<any> {
 		if (!this.client) {
 			await this.initialize();
 		}
 
-		if (this.session) {
-			await this.session.close();
+		// Close previous session if exists
+		if (this.activeSession) {
+			try {
+				await this.activeSession.destroy();
+			} catch (error) {
+				console.warn('Error closing previous session:', error);
+			}
 		}
 
-		this.session = await this.client!.createSession({
+		this.activeSession = await this.client!.createSession({
 			model: this.settings.model
 		});
 
-		return this.session;
+		return this.activeSession;
 	}
 
 	/**
-	 * Send a prompt to the current session
+	 * Send a prompt and wait for complete response
 	 */
 	async sendPrompt(prompt: string, context?: any): Promise<string> {
-		if (!this.session) {
-			throw new Error('No active session. Call createSession() first.');
+		if (!this.activeSession) {
+			await this.createSession();
 		}
 
-		const response = await this.session.sendAndWait({
-			prompt,
-			context
-		});
+		return new Promise((resolve, reject) => {
+			let responseContent = '';
+			
+			// Collect response chunks
+			this.activeSession!.on('assistant.message', (event: any) => {
+				if (event.data?.content) {
+					responseContent += event.data.content;
+				}
+			});
 
-		return response.data.content;
+			// Wait for session to become idle
+			this.activeSession!.on('session.idle', () => {
+				resolve(responseContent);
+			});
+
+			// Handle errors
+			this.activeSession!.on('error', (error: any) => {
+				reject(new Error(`Session error: ${error.message || error}`));
+			});
+
+			// Send the prompt
+			this.activeSession!.send({ prompt, context }).catch(reject);
+		});
 	}
 
 	/**
 	 * Stop the client and cleanup
 	 */
 	async stop(): Promise<void> {
-		if (this.session) {
-			await this.session.close();
-			this.session = null;
+		if (this.activeSession) {
+			try {
+				await this.activeSession.destroy();
+			} catch (error) {
+				console.warn('Error destroying session:', error);
+			}
+			this.activeSession = null;
 		}
 
 		if (this.client) {
-			await this.client.stop();
+			try {
+				await this.client.stop();
+			} catch (error) {
+				console.warn('Error stopping client:', error);
+			}
 			this.client = null;
 		}
 	}
