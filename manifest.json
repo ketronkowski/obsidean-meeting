@@ -1,0 +1,10 @@
+{
+  "id": "obsidean-meeting",
+  "name": "Meeting Processor",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Automate meeting note processing with GitHub Copilot SDK. Process standups and general meetings with one click.",
+  "author": "Kevin Tronkowski",
+  "authorUrl": "https://github.com/ketronkowski",
+  "isDesktopOnly": false
+}
