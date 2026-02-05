@@ -2,6 +2,7 @@ import { App, TFile } from 'obsidian';
 import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { CopilotClientManager } from '../copilot-client';
 import { detectTeam } from '../validators';
+import { SkillLoader } from '../skill-loader';
 
 /**
  * Handles processing of standup meetings
@@ -10,11 +11,13 @@ export class StandupMeetingHandler {
 	private app: App;
 	private settings: MeetingProcessorSettings;
 	private copilotClient: CopilotClientManager;
+	private skillLoader: SkillLoader;
 
-	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager) {
+	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
 		this.app = app;
 		this.settings = settings;
 		this.copilotClient = copilotClient;
+		this.skillLoader = skillLoader;
 	}
 
 	/**

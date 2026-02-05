@@ -1,6 +1,7 @@
 import { App, TFile } from 'obsidian';
 import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { CopilotClientManager } from '../copilot-client';
+import { SkillLoader } from '../skill-loader';
 
 /**
  * Handles processing of general (non-standup) meetings
@@ -9,11 +10,13 @@ export class GeneralMeetingHandler {
 	private app: App;
 	private settings: MeetingProcessorSettings;
 	private copilotClient: CopilotClientManager;
+	private skillLoader: SkillLoader;
 
-	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager) {
+	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
 		this.app = app;
 		this.settings = settings;
 		this.copilotClient = copilotClient;
+		this.skillLoader = skillLoader;
 	}
 
 	/**

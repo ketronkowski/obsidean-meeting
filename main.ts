@@ -4,12 +4,14 @@ import { CopilotClientManager } from './src/copilot-client';
 import { MeetingRouter } from './src/meeting-router';
 import { validateMeetingFile } from './src/validators';
 import { StatusBarManager } from './src/ui/status-bar';
+import { SkillLoader } from './src/skill-loader';
 
 export default class MeetingProcessorPlugin extends Plugin {
 	settings: MeetingProcessorSettings;
 	copilotClient: CopilotClientManager;
 	statusBar: StatusBarManager;
 	router: MeetingRouter;
+	skillLoader: SkillLoader;
 	processing: boolean = false;
 
 	async onload() {
@@ -18,7 +20,12 @@ export default class MeetingProcessorPlugin extends Plugin {
 		// Initialize components
 		this.statusBar = new StatusBarManager(this.addStatusBarItem());
 		this.copilotClient = new CopilotClientManager(this.settings);
-		this.router = new MeetingRouter(this.app, this.settings, this.copilotClient);
+		
+		// Load skills
+		this.skillLoader = new SkillLoader(this.app, this.manifest.dir || '');
+		await this.skillLoader.loadAll();
+		
+		this.router = new MeetingRouter(this.app, this.settings, this.copilotClient, this.skillLoader);
 
 		// Add ribbon icon
 		this.addRibbonIcon('brain-circuit', 'Process Meeting', async () => {

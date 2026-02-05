@@ -4,6 +4,7 @@ import { CopilotClientManager } from './copilot-client';
 import { detectMeetingType } from './validators';
 import { GeneralMeetingHandler } from './handlers/general';
 import { StandupMeetingHandler } from './handlers/standup';
+import { SkillLoader } from './skill-loader';
 
 /**
  * Routes meeting files to the appropriate handler
@@ -12,17 +13,19 @@ export class MeetingRouter {
 	private app: App;
 	private settings: MeetingProcessorSettings;
 	private copilotClient: CopilotClientManager;
+	private skillLoader: SkillLoader;
 	private generalHandler: GeneralMeetingHandler;
 	private standupHandler: StandupMeetingHandler;
 
-	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager) {
+	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
 		this.app = app;
 		this.settings = settings;
 		this.copilotClient = copilotClient;
+		this.skillLoader = skillLoader;
 		
 		// Initialize handlers
-		this.generalHandler = new GeneralMeetingHandler(app, settings, copilotClient);
-		this.standupHandler = new StandupMeetingHandler(app, settings, copilotClient);
+		this.generalHandler = new GeneralMeetingHandler(app, settings, copilotClient, skillLoader);
+		this.standupHandler = new StandupMeetingHandler(app, settings, copilotClient, skillLoader);
 	}
 
 	/**
