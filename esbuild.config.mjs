@@ -30,7 +30,6 @@ const context = await esbuild.context({
 		"@lezer/common",
 		"@lezer/highlight",
 		"@lezer/lr",
-		"@github/copilot-sdk",
 		...builtins
 	],
 	format: "cjs",
@@ -39,6 +38,7 @@ const context = await esbuild.context({
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
 	outfile: "main.js",
+	platform: "node",
 });
 
 if (prod) {

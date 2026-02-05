@@ -22,17 +22,28 @@ export class CopilotClientManager {
 		}
 
 		try {
+			console.log('Initializing Copilot client...');
+			
 			this.client = new CopilotClient({
 				autoStart: true,
 				useStdio: true,
-				logLevel: 'info'
+				logLevel: 'warning'
 			});
 			
 			await this.client.start();
-			console.log('Copilot client initialized successfully');
+			console.log('Copilot client initialized and started successfully');
 		} catch (error) {
 			console.error('Failed to initialize Copilot client:', error);
-			throw new Error(`Copilot client initialization failed: ${error.message}`);
+			
+			// Provide helpful error message
+			const errorMsg = error.message || String(error);
+			if (errorMsg.includes('ENOENT') || errorMsg.includes('not found')) {
+				throw new Error('Copilot CLI not found. Please ensure GitHub Copilot CLI is installed and in your PATH.');
+			} else if (errorMsg.includes('auth')) {
+				throw new Error('Copilot authentication failed. Please run: copilot auth login');
+			} else {
+				throw new Error(`Copilot client initialization failed: ${errorMsg}`);
+			}
 		}
 	}
 
