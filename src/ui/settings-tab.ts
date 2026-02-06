@@ -215,7 +215,7 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 			.setName('Magenta Team Board ID')
 			.setDesc('JIRA board ID for Magenta Team')
 			.addText(text => text
-				.setPlaceholder('331')
+				.setPlaceholder('317')
 				.setValue(this.plugin.settings.magentaBoardId)
 				.onChange(async (value) => {
 					this.plugin.settings.magentaBoardId = value;
