@@ -119,7 +119,7 @@ Go to Settings → Community Plugins → Meeting Processor
 - **JIRA API Token**: API token from Atlassian (see Requirements above)
 - **JIRA Base URL**: Your JIRA instance URL (default: `https://hpe.atlassian.net`)
 - **Green Team Board ID**: JIRA board for Green Team (default: `214`)
-- **Magenta Team Board ID**: JIRA board for Magenta Team (default: `331`)
+- **Magenta Team Board ID**: JIRA board for Magenta Team (default: `317`)
 - **JIRA Project Key**: Project key for work items (default: `GLCP`)
 
 ### Meeting Detection

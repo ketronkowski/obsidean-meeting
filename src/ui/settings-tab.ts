@@ -42,7 +42,7 @@ export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	jiraApiToken: '',
 	jiraBaseUrl: 'https://hpe.atlassian.net',
 	greenBoardId: '214',
-	magentaBoardId: '331',
+	magentaBoardId: '317',
 	jiraProjectKey: 'GLCP',
 	standupKeywords: 'Green Standup, Magenta Standup',
 	filenamePattern: 'YYYY-MM-DD - *.md'
