@@ -68,7 +68,7 @@ export class JiraFormatter {
 	createJiraSection(grouped: JiraIssuesByAssignee): string {
 		const formattedIssues = this.formatByAssignee(grouped);
 		
-		return `## JIRA
+		return `# JIRA
 
 ${formattedIssues}`;
 	}

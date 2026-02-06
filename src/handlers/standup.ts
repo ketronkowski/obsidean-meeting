@@ -108,24 +108,37 @@ export class StandupMeetingHandler {
 	private async insertJiraSection(file: TFile, jiraSection: string): Promise<void> {
 		const content = await this.app.vault.read(file);
 
-		// Check if JIRA section already exists
-		const jiraRegex = /## JIRA\s*\n[\s\S]*?(?=\n##|$)/;
+		// Check if JIRA section already exists (level 1 heading: # JIRA)
+		const jiraRegex = /# JIRA\s*\n[\s\S]*?(?=\n#|$)/;
 		let newContent: string;
 
 		if (jiraRegex.test(content)) {
 			// Replace existing section
-			newContent = content.replace(jiraRegex, jiraSection + '\n');
+			newContent = content.replace(jiraRegex, jiraSection.trim() + '\n');
+			console.log('Replaced existing JIRA section');
 		} else {
-			// Insert after Attendees section if it exists, otherwise at top
-			const attendeesRegex = /## Attendees\s*\n[\s\S]*?(?=\n##|$)/;
+			// Insert after Attendees section if it exists
+			const attendeesRegex = /# Attendees\s*\n[\s\S]*?(?=\n#|$)/;
 			if (attendeesRegex.test(content)) {
 				newContent = content.replace(
 					attendeesRegex,
 					(match) => match + '\n' + jiraSection + '\n'
 				);
+				console.log('Inserted JIRA section after Attendees');
 			} else {
-				// Insert at the beginning
-				newContent = jiraSection + '\n\n' + content;
+				// Insert at the beginning after frontmatter
+				const frontmatterRegex = /^---\s*\n[\s\S]*?\n---\s*\n/;
+				if (frontmatterRegex.test(content)) {
+					newContent = content.replace(
+						frontmatterRegex,
+						(match) => match + '\n' + jiraSection + '\n'
+					);
+					console.log('Inserted JIRA section after frontmatter');
+				} else {
+					// No frontmatter, insert at top
+					newContent = jiraSection + '\n\n' + content;
+					console.log('Inserted JIRA section at top');
+				}
 			}
 		}
 
