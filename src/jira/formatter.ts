@@ -1,9 +1,30 @@
 import { JiraIssue, JiraIssuesByAssignee } from './client';
 
 /**
- * Format JIRA issues as markdown with checkboxes and status emoji
+ * Format JIRA issues as markdown with checkboxes, issue type icons, and status emoji
  */
 export class JiraFormatter {
+	/**
+	 * Get issue type icon
+	 */
+	private getIssueTypeIcon(issueType: string): string {
+		const typeLower = issueType.toLowerCase();
+		
+		if (typeLower.includes('story')) {
+			return '📋';
+		} else if (typeLower.includes('bug')) {
+			return '🐛';
+		} else if (typeLower.includes('task')) {
+			return '✅';
+		} else if (typeLower.includes('epic')) {
+			return '🎯';
+		} else if (typeLower.includes('subtask') || typeLower.includes('sub-task')) {
+			return '📝';
+		} else {
+			return '📌'; // Default for unknown types
+		}
+	}
+
 	/**
 	 * Get status emoji based on JIRA status name
 	 */
@@ -27,8 +48,9 @@ export class JiraFormatter {
 	 * Format a single issue as a checkbox line
 	 */
 	private formatIssue(issue: JiraIssue): string {
-		const emoji = this.getStatusEmoji(issue.status);
-		return `- [ ] ${emoji} [${issue.key}](${issue.url}) - ${issue.summary} (${issue.status})`;
+		const typeIcon = this.getIssueTypeIcon(issue.issueType);
+		const statusEmoji = this.getStatusEmoji(issue.status);
+		return `- [ ] ${typeIcon} ${statusEmoji} [${issue.key}](${issue.url}) - ${issue.summary} (${issue.status})`;
 	}
 
 	/**

@@ -10,6 +10,7 @@ export interface JiraIssue {
 	key: string;
 	summary: string;
 	status: string;
+	issueType: string;
 	assignee: string | null;
 	assigneeDisplayName: string | null;
 	url: string;
@@ -41,6 +42,7 @@ export function transformJiraIssues(issues: any[], cloudId: string): JiraIssue[]
 		key: issue.key,
 		summary: issue.fields?.summary || 'No summary',
 		status: issue.fields?.status?.name || 'Unknown',
+		issueType: issue.fields?.issuetype?.name || 'Task',
 		assignee: issue.fields?.assignee?.accountId || null,
 		assigneeDisplayName: issue.fields?.assignee?.displayName || 'Unassigned',
 		url: `https://hpe.atlassian.net/browse/${issue.key}`

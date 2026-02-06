@@ -115,7 +115,7 @@ export class JiraApiClient {
 			const issuesUrl = `${this.settings.jiraBaseUrl}/rest/agile/1.0/board/${boardId}/sprint/${activeSprint.id}/issue`;
 			const params = new URLSearchParams({
 				maxResults: maxResults.toString(),
-				fields: 'summary,status,assignee'
+				fields: 'summary,status,assignee,issuetype'
 			});
 
 			console.log('Querying sprint issues:', issuesUrl);
@@ -151,6 +151,7 @@ export class JiraApiClient {
 			key: issue.key,
 			summary: issue.fields?.summary || 'No summary',
 			status: issue.fields?.status?.name || 'Unknown',
+			issueType: issue.fields?.issuetype?.name || 'Task',
 			assignee: issue.fields?.assignee?.accountId || null,
 			assigneeDisplayName: issue.fields?.assignee?.displayName || 'Unassigned',
 			url: `${this.settings.jiraBaseUrl}/browse/${issue.key}`
