@@ -47,49 +47,31 @@ export class JiraManager {
 	}
 
 	/**
-	 * Get Atlassian cloud ID using Copilot
+	 * Get Atlassian cloud ID using Copilot CLI
 	 */
 	private async getCloudId(): Promise<string> {
-		const prompt = `Use the Atlassian MCP getAccessibleAtlassianResources tool to get my cloud ID. 
-Return ONLY the cloud ID string, nothing else. For example, if the cloud is hpe.atlassian.net, return "hpe".`;
-
-		const response = await this.copilotClient.sendPrompt(prompt);
-		const cleaned = response.trim().replace(/['"]/g, '');
-		
-		// If response looks like a cloud ID, use it, otherwise default to 'hpe'
-		if (cleaned.length < 50 && !cleaned.includes(' ')) {
-			return cleaned;
+		try {
+			const response = await this.copilotClient.queryJiraWithCLI(
+				'hpe', // Try with default first
+				'project = GLCP AND resolution = Unresolved ORDER BY created DESC' // Simple test query
+			);
+			
+			// If it works, we know 'hpe' is correct
+			return 'hpe';
+		} catch (error) {
+			console.warn('Could not verify cloud ID, using default "hpe"');
+			return 'hpe';
 		}
-		
-		// Default fallback
-		console.warn('Could not parse cloud ID from response, using default "hpe"');
-		return 'hpe';
 	}
 
 	/**
-	 * Query JIRA issues using Copilot SDK with Atlassian MCP
+	 * Query JIRA issues using Copilot CLI with Atlassian MCP
 	 */
 	private async queryJiraIssues(cloudId: string, jql: string): Promise<JiraIssue[]> {
-		// Ask Copilot to use the Atlassian MCP searchJiraIssuesUsingJql tool
-		const prompt = `Use the Atlassian MCP searchJiraIssuesUsingJql tool with these parameters:
-- cloudId: "${cloudId}"
-- jql: "${jql}"
-- fields: ["summary", "status", "assignee"]
-- maxResults: 100
-
-For each issue in the results, extract and format as JSON:
-- key: the issue key (e.g., "GLCP-12345")
-- summary: the issue summary/title
-- status: the status name (e.g., "In Progress", "To Do")
-- assignee: the assignee display name (or "Unassigned" if null)
-
-Return ONLY a valid JSON array of issues, nothing else. Example:
-[{"key":"GLCP-123","summary":"Fix bug","status":"In Progress","assignee":"John Smith"}]`;
-
 		try {
-			const response = await this.copilotClient.sendPrompt(prompt);
+			const response = await this.copilotClient.queryJiraWithCLI(cloudId, jql);
 			
-			// Try to extract JSON from the response
+			// Parse the response
 			const issues = this.parseJiraResponse(response, cloudId);
 			return issues;
 

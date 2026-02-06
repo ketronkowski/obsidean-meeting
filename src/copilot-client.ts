@@ -83,6 +83,68 @@ export class CopilotClientManager {
 	}
 
 	/**
+	 * Use Copilot CLI directly for JIRA queries via Atlassian MCP
+	 * The CLI has access to MCP servers that the SDK doesn't expose
+	 */
+	async queryJiraWithCLI(cloudId: string, jql: string): Promise<string> {
+		const { spawn } = require('child_process');
+		
+		return new Promise((resolve, reject) => {
+			const cliPath = this.settings.copilotCliPath || 'copilot';
+			
+			console.log('Spawning CLI for JIRA query:', cliPath);
+			console.log('JQL:', jql);
+			
+			// Construct prompt to use Atlassian MCP tools
+			const fullPrompt = `Use the Atlassian MCP searchJiraIssuesUsingJql tool to query JIRA:
+- cloudId: "${cloudId}"
+- jql: "${jql}"
+- fields: ["summary", "status", "assignee"]
+- maxResults: 100
+
+For each issue in the results, extract and format as JSON:
+- key: the issue key (e.g., "GLCP-12345")
+- summary: the issue summary/title
+- status: the status name (e.g., "In Progress", "To Do")
+- assignee: the assignee display name (or "Unassigned" if null)
+
+Return ONLY a valid JSON array of issues with no explanation, markdown formatting, or code fences. Example:
+[{"key":"GLCP-123","summary":"Fix bug","status":"In Progress","assignee":"John Smith"}]`;
+			
+			// Use non-interactive mode with -p flag
+			const process = spawn(cliPath, ['-p', fullPrompt], {
+				stdio: ['pipe', 'pipe', 'pipe']
+			});
+			
+			let stdout = '';
+			let stderr = '';
+			
+			process.stdout.on('data', (data: Buffer) => {
+				stdout += data.toString();
+			});
+			
+			process.stderr.on('data', (data: Buffer) => {
+				stderr += data.toString();
+			});
+			
+			process.on('close', (code: number) => {
+				if (code !== 0) {
+					console.error('CLI error:', stderr);
+					reject(new Error(`CLI exited with code ${code}: ${stderr}`));
+				} else {
+					console.log('CLI raw response:', stdout);
+					resolve(stdout.trim());
+				}
+			});
+			
+			process.on('error', (error: Error) => {
+				console.error('Failed to spawn CLI:', error);
+				reject(error);
+			});
+		});
+	}
+
+	/**
 	 * Use Copilot CLI directly for vision analysis
 	 * The CLI supports vision when files are referenced in the prompt
 	 */
