@@ -378,10 +378,55 @@ export class StandupMeetingHandler {
 		console.log('Transcript cleaned and saved');
 	}
 
+	/**
+	 * Check if Unified Summary already exists with content
+	 */
+	private hasUnifiedSummary(content: string): boolean {
+		const match = content.match(/# Unified Summary\s*\n([\s\S]*?)(?=\n#|$)/);
+		return match !== null && match[1].trim().length > 20;
+	}
+
+	/**
+	 * Check if Transcript section exists with content
+	 */
+	private hasTranscript(content: string): boolean {
+		const match = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
+		return match !== null && match[1].trim().length > 20;
+	}
+
+	/**
+	 * Main summary generation - routes to standard or enhanced workflow
+	 */
 	private async generateSummary(file: TFile): Promise<void> {
 		console.log('Generating standup summary...');
 		
 		const content = await this.app.vault.read(file);
+		
+		// Skip if Unified Summary already exists
+		if (this.hasUnifiedSummary(content)) {
+			console.log('Unified Summary already exists, skipping generation');
+			return;
+		}
+
+		// Check what sources we have
+		const hasCopilotSummary = this.hasCopilotSummary(content);
+		const hasTranscript = this.hasTranscript(content);
+
+		// Route to appropriate workflow
+		if (hasCopilotSummary && hasTranscript) {
+			console.log('Both sources available - using enhanced workflow');
+			await this.generateEnhancedSummary(file, content);
+		} else {
+			console.log('Single source available - using standard workflow');
+			await this.generateStandardSummary(file, content);
+		}
+	}
+
+	/**
+	 * Standard summary workflow - single source (backward compatible)
+	 */
+	private async generateStandardSummary(file: TFile, content: string): Promise<void> {
+		console.log('Generating standard summary...');
 		
 		// Get the summary generation skill
 		const summarySkill = this.skillLoader.getSkill('summary-generation');
@@ -442,6 +487,168 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 			console.error('Error generating summary:', error);
 			throw error;
 		}
+	}
+
+	/**
+	 * Enhanced summary workflow - generates from transcript and combines with Copilot Summary
+	 */
+	private async generateEnhancedSummary(file: TFile, content: string): Promise<void> {
+		console.log('Generating enhanced summary with both sources...');
+		
+		try {
+			// Step 1: Generate Transcript Summary
+			this.statusBar.show('Generating transcript summary...', 0);
+			const transcriptSummary = await this.generateTranscriptSummary(content);
+			
+			if (!transcriptSummary) {
+				console.warn('Failed to generate transcript summary, falling back to standard');
+				await this.generateStandardSummary(file, content);
+				return;
+			}
+
+			// Step 2: Combine both summaries
+			this.statusBar.show('Combining summaries...', 0);
+			const unifiedSummary = await this.combineSummaries(content, transcriptSummary);
+			
+			if (!unifiedSummary) {
+				console.warn('Failed to combine summaries, falling back to standard');
+				await this.generateStandardSummary(file, content);
+				return;
+			}
+
+			// Step 3: Update all sections
+			await this.updateSummarySections(file, content, unifiedSummary, transcriptSummary);
+			
+			console.log('Enhanced summary generated successfully');
+		} catch (error) {
+			console.error('Error in enhanced summary generation:', error);
+			console.log('Falling back to standard summary generation');
+			await this.generateStandardSummary(file, content);
+		}
+	}
+
+	/**
+	 * Generate summary from transcript content
+	 */
+	private async generateTranscriptSummary(content: string): Promise<string | null> {
+		console.log('Generating transcript summary...');
+		
+		// Extract transcript
+		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
+		if (!transcriptMatch || !transcriptMatch[1].trim()) {
+			console.warn('No transcript content found');
+			return null;
+		}
+
+		const transcriptContent = transcriptMatch[1].trim();
+
+		try {
+			const prompt = `You are analyzing a standup meeting transcript. Generate a concise summary focused on:
+- What each person completed yesterday
+- What each person is planning for today  
+- Any blockers or issues mentioned
+- Key decisions or action items
+
+Format as clear bullet points organized by team member when possible.
+
+Transcript:
+
+${transcriptContent}`;
+
+			const summary = await this.copilotClient.sendPrompt(prompt);
+			return summary.trim();
+		} catch (error) {
+			console.error('Error generating transcript summary:', error);
+			return null;
+		}
+	}
+
+	/**
+	 * Combine Copilot Summary and Transcript Summary intelligently
+	 */
+	private async combineSummaries(content: string, transcriptSummary: string): Promise<string | null> {
+		console.log('Combining summaries...');
+		
+		// Extract Copilot Summary
+		const copilotMatch = content.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n#|$)/);
+		if (!copilotMatch || !copilotMatch[1].trim()) {
+			console.warn('No Copilot Summary found');
+			return null;
+		}
+
+		const copilotSummary = copilotMatch[1].trim();
+
+		try {
+			const prompt = `You are creating a unified summary for a standup meeting by combining two sources:
+
+1. **Teams Copilot Summary** (from Microsoft Teams AI):
+${copilotSummary}
+
+2. **Transcript Summary** (from meeting transcript):
+${transcriptSummary}
+
+Create a single, cohesive summary that:
+- Merges duplicate information (don't repeat the same point twice)
+- Preserves all unique insights from both sources
+- Maintains focus on: completed work, planned work, blockers
+- Uses clear, organized bullet points
+- Prioritizes accuracy and completeness
+
+Generate the unified summary:`;
+
+			const unified = await this.copilotClient.sendPrompt(prompt);
+			return unified.trim();
+		} catch (error) {
+			console.error('Error combining summaries:', error);
+			return null;
+		}
+	}
+
+	/**
+	 * Update file with all summary sections in correct order
+	 */
+	private async updateSummarySections(
+		file: TFile, 
+		content: string, 
+		unifiedSummary: string, 
+		transcriptSummary: string
+	): Promise<void> {
+		console.log('Updating summary sections...');
+		
+		let newContent = content;
+
+		// Insert or update Transcript Summary (above Transcript)
+		const transcriptSummarySection = `# Transcript Summary\n\n${transcriptSummary}\n\n`;
+		const transcriptSummaryRegex = /# Transcript Summary\s*\n[\s\S]*?(?=\n#|$)/;
+		
+		if (transcriptSummaryRegex.test(newContent)) {
+			// Update existing
+			newContent = newContent.replace(transcriptSummaryRegex, transcriptSummarySection);
+		} else {
+			// Insert before Transcript
+			const transcriptRegex = /(# Transcript\s*\n)/;
+			if (transcriptRegex.test(newContent)) {
+				newContent = newContent.replace(transcriptRegex, transcriptSummarySection + '$1');
+			}
+		}
+
+		// Insert or update Unified Summary (above Copilot Summary)
+		const unifiedSummarySection = `# Unified Summary\n\n${unifiedSummary}\n\n`;
+		const unifiedSummaryRegex = /# Unified Summary\s*\n[\s\S]*?(?=\n#|$)/;
+		
+		if (unifiedSummaryRegex.test(newContent)) {
+			// Update existing
+			newContent = newContent.replace(unifiedSummaryRegex, unifiedSummarySection);
+		} else {
+			// Insert before Copilot Summary
+			const copilotSummaryRegex = /(# Copilot Summary\s*\n)/;
+			if (copilotSummaryRegex.test(newContent)) {
+				newContent = newContent.replace(copilotSummaryRegex, unifiedSummarySection + '$1');
+			}
+		}
+
+		await this.app.vault.modify(file, newContent);
+		console.log('All summary sections updated');
 	}
 
 	private async extractJiraUpdates(file: TFile, content: string): Promise<void> {

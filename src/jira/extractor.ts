@@ -69,19 +69,31 @@ export class JiraKeyExtractor {
 	extractRelevantContent(fileContent: string): string {
 		let content = '';
 		
-		// 1. Check for Copilot Summary first
+		// 1. Check for Unified Summary (enhanced workflow)
+		const unifiedSummaryMatch = fileContent.match(/# Unified Summary\s*\n([\s\S]*?)(?=\n#|$)/);
+		if (unifiedSummaryMatch && unifiedSummaryMatch[1].trim()) {
+			content += unifiedSummaryMatch[1].trim() + '\n\n';
+		}
+		
+		// 2. Check for Copilot Summary
 		const copilotSummaryMatch = fileContent.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (copilotSummaryMatch && copilotSummaryMatch[1].trim()) {
 			content += copilotSummaryMatch[1].trim() + '\n\n';
 		}
 		
-		// 2. Include Transcript
+		// 3. Check for Transcript Summary (enhanced workflow)
+		const transcriptSummaryMatch = fileContent.match(/# Transcript Summary\s*\n([\s\S]*?)(?=\n#|$)/);
+		if (transcriptSummaryMatch && transcriptSummaryMatch[1].trim()) {
+			content += transcriptSummaryMatch[1].trim() + '\n\n';
+		}
+		
+		// 4. Include Transcript
 		const transcriptMatch = fileContent.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (transcriptMatch && transcriptMatch[1].trim()) {
 			content += transcriptMatch[1].trim() + '\n\n';
 		}
 		
-		// 3. Include Summary if present
+		// 5. Include Summary if present (standard workflow)
 		const summaryMatch = fileContent.match(/# Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (summaryMatch && summaryMatch[1].trim()) {
 			content += summaryMatch[1].trim();
