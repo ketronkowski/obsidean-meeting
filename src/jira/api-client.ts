@@ -1,3 +1,4 @@
+import { requestUrl } from 'obsidian';
 import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { JiraIssue } from './client';
 
@@ -47,7 +48,9 @@ export class JiraApiClient {
 			console.log('Querying JIRA API:', url);
 			console.log('JQL:', jql);
 
-			const response = await fetch(`${url}?${params}`, {
+			// Use Obsidian's requestUrl to avoid CORS issues
+			const response = await requestUrl({
+				url: `${url}?${params}`,
 				method: 'GET',
 				headers: {
 					'Authorization': this.getAuthHeader(),
@@ -56,17 +59,10 @@ export class JiraApiClient {
 				}
 			});
 
-			if (!response.ok) {
-				const errorText = await response.text();
-				console.error('JIRA API error:', response.status, errorText);
-				throw new Error(`JIRA API error (${response.status}): ${errorText}`);
-			}
-
-			const data = await response.json();
-			console.log(`JIRA returned ${data.issues?.length || 0} issues`);
+			console.log(`JIRA returned ${response.json.issues?.length || 0} issues`);
 
 			// Transform to our format
-			return this.transformIssues(data.issues || []);
+			return this.transformIssues(response.json.issues || []);
 
 		} catch (error) {
 			console.error('Error querying JIRA:', error);
