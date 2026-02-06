@@ -52,7 +52,7 @@ export class GeneralMeetingHandler {
 	 * Check if meeting has a Copilot Summary section with content
 	 */
 	private hasCopilotSummary(content: string): boolean {
-		const summaryMatch = content.match(/## Copilot Summary\s*\n([\s\S]*?)(?=\n##|$)/);
+		const summaryMatch = content.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (!summaryMatch) return false;
 		
 		const summaryContent = summaryMatch[1].trim();
@@ -90,7 +90,7 @@ export class GeneralMeetingHandler {
 		const content = await this.app.vault.read(file);
 		
 		// Extract transcript section
-		const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (!transcriptMatch) {
 			console.log('No transcript section found');
 			return;
@@ -108,8 +108,8 @@ export class GeneralMeetingHandler {
 
 		// Replace transcript section
 		const newContent = content.replace(
-			/## Transcript\s*\n[\s\S]*?(?=\n##|$)/,
-			`## Transcript\n\n${result.cleaned}\n\n`
+			/# Transcript\s*\n[\s\S]*?(?=\n#|$)/,
+			`# Transcript\n\n${result.cleaned}\n\n`
 		);
 
 		await this.app.vault.modify(file, newContent);
@@ -135,16 +135,29 @@ export class GeneralMeetingHandler {
 		let contentToSummarize = '';
 		
 		// Check for Copilot Summary first
-		const copilotSummaryMatch = content.match(/## Copilot Summary\s*\n([\s\S]*?)(?=\n##|$)/);
-		if (copilotSummaryMatch && copilotSummaryMatch[1].trim()) {
+		const copilotSummaryMatch = content.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n+#\s|$)/);
+		console.log('Copilot Summary match found:', !!copilotSummaryMatch);
+		if (copilotSummaryMatch) {
+			console.log('Copilot Summary raw length:', copilotSummaryMatch[1]?.length || 0);
+			console.log('Copilot Summary trimmed length:', copilotSummaryMatch[1]?.trim().length || 0);
+		}
+		
+		if (copilotSummaryMatch && copilotSummaryMatch[1].trim().length > 50) {
 			contentToSummarize = copilotSummaryMatch[1].trim();
-			console.log('Using Copilot Summary for analysis');
+			console.log('Using Copilot Summary for analysis, length:', contentToSummarize.length);
 		} else {
 			// Use transcript
-			const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+			console.log('Copilot Summary empty or too short, trying Transcript...');
+			const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n+#\s|$)/);
+			console.log('Transcript match found:', !!transcriptMatch);
+			if (transcriptMatch) {
+				console.log('Transcript raw length:', transcriptMatch[1]?.length || 0);
+				console.log('Transcript trimmed length:', transcriptMatch[1]?.trim().length || 0);
+			}
+			
 			if (transcriptMatch && transcriptMatch[1].trim()) {
 				contentToSummarize = transcriptMatch[1].trim();
-				console.log('Using transcript for analysis');
+				console.log('Using transcript for analysis, length:', contentToSummarize.length);
 			}
 		}
 
@@ -155,34 +168,123 @@ export class GeneralMeetingHandler {
 
 		try {
 			// Build prompt with skill instructions
-			const prompt = `${summarySkill.purpose}
+			const prompt = `You are a meeting summarization assistant. Analyze the following meeting content and generate a structured summary.
 
 ${summarySkill.sections.get('Analysis Points') || ''}
+
 ${summarySkill.sections.get('Output Format') || ''}
+
 ${summarySkill.sections.get('Style Guidelines') || ''}
 
 Meeting content to summarize:
 
 ${contentToSummarize}
 
-Please generate a comprehensive summary following the format specified above.`;
+CRITICAL INSTRUCTIONS:
+- Output ONLY the summary content (Key Points, Decisions, Action Items, Follow-up)
+- DO NOT include the "# Transcript Summary" heading
+- DO NOT wrap in markdown code fences (no \`\`\`markdown)
+- DO NOT include meta-commentary like "Here is the summary"
+- Start directly with "**Key Points:**"`;
 
 			// Get summary from Copilot
+			console.log('Sending prompt to Copilot...');
 			const summary = await this.copilotClient.sendPrompt(prompt);
+			console.log('Received summary from Copilot, length:', summary.length);
 			
-			// Update Summary section
-			const summaryRegex = /## Summary\s*\n[\s\S]*?(?=\n##|$)/;
+			// Clean the summary response
+			let cleanedSummary = summary.trim();
+			
+			// Strip markdown code fence if present
+			if (cleanedSummary.startsWith('```markdown') || cleanedSummary.startsWith('```')) {
+				cleanedSummary = cleanedSummary.replace(/^```markdown?\s*\n/, '').replace(/\n```\s*$/, '').trim();
+				console.log('Stripped markdown code fence');
+			}
+			
+			// Strip the heading if Copilot included it anyway
+			cleanedSummary = cleanedSummary.replace(/^#\s+Transcript Summary\s*\n+/i, '').trim();
+			
+			console.log('Cleaned summary length:', cleanedSummary.length);
+			
+			// Re-read file to get absolutely latest content
+			console.log('Re-reading file to ensure fresh content...');
+			const freshContent = await this.app.vault.read(file);
+			console.log('Fresh content length:', freshContent.length);
+			
+			// Show all section headings in the file
+			const headings = freshContent.match(/^#[^#\n].*$/gm);
+			console.log('Sections in file:', headings);
+			
+			// Update Transcript Summary section
 			let newContent: string;
 			
-			if (summaryRegex.test(content)) {
-				// Replace existing summary
-				newContent = content.replace(summaryRegex, `## Summary\n\n${summary}\n\n`);
+			// Regex that properly stops at the next # heading (with any amount of whitespace before it)
+			const summaryRegex = /# Transcript Summary\s*\n([\s\S]*?)(?=\n+#\s)/;
+			const existingSummaryMatch = freshContent.match(summaryRegex);
+			
+			if (existingSummaryMatch) {
+				console.log('Found existing Transcript Summary section');
+				console.log('Full match length:', existingSummaryMatch[0]?.length || 0);
+				console.log('Content capture length:', existingSummaryMatch[1]?.length || 0);
+				console.log('Content trimmed length:', existingSummaryMatch[1]?.trim().length || 0);
+				console.log('First 100 chars of matched content:', existingSummaryMatch[1]?.substring(0, 100));
+				
+				// Replace only the content within the existing section
+				newContent = freshContent.replace(summaryRegex, `# Transcript Summary\n\n${cleanedSummary}\n\n`);
+				console.log('Replaced existing Transcript Summary section');
 			} else {
-				// Add summary section before last heading or at end
-				newContent = content + `\n\n## Summary\n\n${summary}\n`;
+				console.log('No Transcript Summary found - will insert new section');
+				const copilotSummaryRegex = /(# Copilot Summary\s*\n[\s\S]*?)(\n+# )/;
+				
+				if (copilotSummaryRegex.test(freshContent)) {
+					// Insert after Copilot Summary section
+					newContent = freshContent.replace(
+						copilotSummaryRegex,
+						`$1\n\n# Transcript Summary\n\n${cleanedSummary}\n\n$2`
+					);
+					console.log('Inserted new Transcript Summary after Copilot Summary');
+				} else {
+					// Fallback: add at end if no Copilot Summary found
+					console.log('No Copilot Summary found - adding Transcript Summary at end');
+					newContent = freshContent + `\n\n# Transcript Summary\n\n${cleanedSummary}\n`;
+				}
 			}
 
-			await this.app.vault.modify(file, newContent);
+			console.log('Old content length:', freshContent.length);
+			console.log('New content length:', newContent.length);
+			console.log('Content changed:', freshContent !== newContent);
+			console.log('File path:', file.path);
+			
+			// Check if file is currently open in an editor
+			const leaves = this.app.workspace.getLeavesOfType('markdown');
+			const activeLeaf = leaves.find(leaf => {
+				const view = leaf.view as any;
+				return view.getViewType() === 'markdown' && view.file?.path === file.path;
+			});
+			
+			if (activeLeaf) {
+				console.log('File is open, using editor API...');
+				const view = activeLeaf.view as any;
+				const editor = view.editor;
+				if (editor) {
+					// Replace entire content using editor
+					const lastLine = editor.lastLine();
+					const lastLineLength = editor.getLine(lastLine).length;
+					editor.replaceRange(
+						newContent,
+						{ line: 0, ch: 0 },
+						{ line: lastLine, ch: lastLineLength }
+					);
+					console.log('Editor content updated');
+				} else {
+					console.warn('No editor found, falling back to vault.modify()');
+					await this.app.vault.modify(file, newContent);
+				}
+			} else {
+				console.log('File not open, using vault.modify()...');
+				await this.app.vault.modify(file, newContent);
+			}
+			
 			console.log('Summary generated and saved');
 		} catch (error) {
 			console.error('Error generating summary:', error);

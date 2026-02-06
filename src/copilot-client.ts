@@ -92,26 +92,88 @@ export class CopilotClientManager {
 
 		return new Promise((resolve, reject) => {
 			let responseContent = '';
+			let hasResolved = false;
+			
+			// Set a timeout in case events don't fire
+			const timeout = setTimeout(() => {
+				if (!hasResolved) {
+					console.warn('Copilot response timeout, returning partial content:', responseContent.length, 'chars');
+					hasResolved = true;
+					resolve(responseContent);
+				}
+			}, 60000); // 60 second timeout
 			
 			// Collect response chunks
-			this.activeSession!.on('assistant.message', (event: any) => {
+			const messageHandler = (event: any) => {
+				console.log('Received assistant.message event');
 				if (event.data?.content) {
+					console.log('Content chunk:', event.data.content.substring(0, 100));
 					responseContent += event.data.content;
 				}
-			});
+			};
 
 			// Wait for session to become idle
-			this.activeSession!.on('session.idle', () => {
-				resolve(responseContent);
-			});
+			const idleHandler = () => {
+				console.log('Session idle event fired');
+				console.log('  hasResolved =', hasResolved);
+				console.log('  responseContent.length =', responseContent.length);
+				
+				if (!hasResolved) {
+					console.log('  Setting hasResolved = true');
+					clearTimeout(timeout);
+					hasResolved = true;
+					
+					// Clean up listeners
+					try {
+						console.log('  Removing event listeners...');
+						this.activeSession!.off('assistant.message', messageHandler);
+						this.activeSession!.off('session.idle', idleHandler);
+						this.activeSession!.off('error', errorHandler);
+						console.log('  Event listeners removed');
+					} catch (error) {
+						console.error('  Error removing listeners:', error);
+					}
+					
+					console.log('  About to resolve with:', responseContent.substring(0, 100));
+					try {
+						resolve(responseContent);
+						console.log('  Promise.resolve() called successfully');
+					} catch (error) {
+						console.error('  Error in resolve():', error);
+					}
+				} else {
+					console.log('  Skipping resolve because hasResolved is already true');
+				}
+			};
 
 			// Handle errors
-			this.activeSession!.on('error', (error: any) => {
-				reject(new Error(`Session error: ${error.message || error}`));
-			});
+			const errorHandler = (error: any) => {
+				console.error('Session error event:', error);
+				if (!hasResolved) {
+					clearTimeout(timeout);
+					hasResolved = true;
+					
+					// Clean up listeners
+					this.activeSession!.off('assistant.message', messageHandler);
+					this.activeSession!.off('session.idle', idleHandler);
+					this.activeSession!.off('error', errorHandler);
+					
+					reject(new Error(`Session error: ${error.message || error}`));
+				}
+			};
+
+			// Register event handlers BEFORE sending
+			console.log('Registering event handlers...');
+			this.activeSession!.on('assistant.message', messageHandler);
+			this.activeSession!.on('session.idle', idleHandler);
+			this.activeSession!.on('error', errorHandler);
 
 			// Send the prompt
-			this.activeSession!.send({ prompt, context }).catch(reject);
+			console.log('Sending prompt to session...');
+			this.activeSession!.send({ prompt, context }).catch((err: any) => {
+				console.error('Error sending prompt:', err);
+				reject(err);
+			});
 		});
 	}
 
