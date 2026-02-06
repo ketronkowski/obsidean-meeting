@@ -23,14 +23,14 @@ export class JiraManager {
 	/**
 	 * Query active sprint issues and return formatted JIRA section
 	 */
-	async queryAndFormatSprint(boardId: string, projectKey: string): Promise<string> {
+	async queryAndFormatSprint(boardId: string, projectKey: string, teamName?: string): Promise<string> {
 		try {
 			// Use board sprint API instead of JQL (board isn't a valid JQL field)
-			const issues = await this.apiClient.searchBoardSprintIssues(boardId, 100);
+			const issues = await this.apiClient.searchBoardSprintIssues(boardId, teamName, 100);
 			console.log(`Found ${issues.length} issues in active sprint`);
 
 			if (issues.length === 0) {
-				return `## JIRA\n\nNo issues found in active sprint for board ${boardId}.\n`;
+				return `# JIRA\n\nNo issues found in active sprint for board ${boardId}.\n`;
 			}
 
 			// Group by assignee
@@ -41,7 +41,7 @@ export class JiraManager {
 
 		} catch (error) {
 			console.error('Error querying JIRA:', error);
-			return `## JIRA\n\n⚠️ Error querying JIRA: ${error.message}\n\nPlease check your JIRA credentials in plugin settings.\n`;
+			return `# JIRA\n\n⚠️ Error querying JIRA: ${error.message}\n\nPlease check your JIRA credentials in plugin settings.\n`;
 		}
 	}
 }

@@ -55,7 +55,7 @@ export class StandupMeetingHandler {
 			const mode = this.detectMode(content);
 
 			if (mode === 'pre-meeting') {
-				await this.processPreMeeting(file, boardId);
+				await this.processPreMeeting(file, boardId, team);
 			} else {
 				await this.processPostMeeting(file, boardId);
 			}
@@ -87,15 +87,16 @@ export class StandupMeetingHandler {
 	/**
 	 * Pre-meeting: Populate JIRA section and expected attendees
 	 */
-	private async processPreMeeting(file: TFile, boardId: string): Promise<void> {
+	private async processPreMeeting(file: TFile, boardId: string, teamName: string): Promise<void> {
 		console.log('Pre-meeting mode: populating JIRA section...');
 		this.statusBar.show('Querying JIRA...', 0);
 
 		try {
-			// Query and format JIRA issues
+			// Query and format JIRA issues (pass team name to help find correct sprint)
 			const jiraSection = await this.jiraManager.queryAndFormatSprint(
 				boardId,
-				this.settings.jiraProjectKey
+				this.settings.jiraProjectKey,
+				teamName
 			);
 
 			// Insert into file

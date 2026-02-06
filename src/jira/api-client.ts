@@ -78,7 +78,7 @@ export class JiraApiClient {
 	/**
 	 * Query issues for a specific board's active sprint using Agile API
 	 */
-	async searchBoardSprintIssues(boardId: string, maxResults: number = 100): Promise<JiraIssue[]> {
+	async searchBoardSprintIssues(boardId: string, teamName?: string, maxResults: number = 100): Promise<JiraIssue[]> {
 		if (!this.isConfigured()) {
 			throw new Error('JIRA credentials not configured. Please add email and API token in settings.');
 		}
@@ -88,6 +88,9 @@ export class JiraApiClient {
 			const sprintUrl = `${this.settings.jiraBaseUrl}/rest/agile/1.0/board/${boardId}/sprint?state=active`;
 			
 			console.log('Getting active sprint for board:', boardId);
+			if (teamName) {
+				console.log('Looking for sprint matching team:', teamName);
+			}
 			
 			const sprintResponse = await requestUrl({
 				url: sprintUrl,
@@ -108,8 +111,27 @@ export class JiraApiClient {
 				return [];
 			}
 
-			const activeSprint = sprints[0];
-			console.log('Active sprint:', activeSprint.id, activeSprint.name);
+			console.log(`Found ${sprints.length} active sprint(s):`, sprints.map((s: any) => `${s.id} '${s.name}'`).join(', '));
+
+			// If team name provided, try to find matching sprint
+			let activeSprint = sprints[0]; // Default to first sprint
+			
+			if (teamName && sprints.length > 1) {
+				// Look for sprint with team name in it (case-insensitive)
+				const matchingSprint = sprints.find((s: any) => 
+					s.name.toLowerCase().includes(teamName.toLowerCase())
+				);
+				
+				if (matchingSprint) {
+					activeSprint = matchingSprint;
+					console.log(`Selected sprint matching team '${teamName}':`, activeSprint.id, activeSprint.name);
+				} else {
+					console.warn(`No sprint found matching team '${teamName}', using first sprint`);
+					console.log('Active sprint:', activeSprint.id, activeSprint.name);
+				}
+			} else {
+				console.log('Active sprint:', activeSprint.id, activeSprint.name);
+			}
 
 			// Now get issues for this sprint
 			const issuesUrl = `${this.settings.jiraBaseUrl}/rest/agile/1.0/board/${boardId}/sprint/${activeSprint.id}/issue`;
