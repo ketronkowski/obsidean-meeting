@@ -6,18 +6,21 @@ Automate your meeting note processing with AI-powered workflows. This Obsidian p
 
 - **One-Click Processing**: Process meeting notes with a ribbon button or command palette
 - **Smart Meeting Detection**: Automatically detects standup vs. general meetings
-- **Attendee Extraction**: Extract attendees from Teams screenshots using vision AI
+- **Attendee Extraction**: Extract attendees from Teams screenshots using Copilot vision AI
+- **People Profiles**: Auto-create and link People profiles for attendees
 - **Transcript Cleaning**: Automatically clean transcripts from 4 different formats
-- **AI-Powered Summaries**: Generate concise meeting summaries
-- **JIRA Integration**: Auto-populate standup notes with active sprint issues
-- **Configurable**: Customize paths, models, and team settings
+- **AI-Powered Summaries**: Generate concise meeting summaries using GitHub Copilot
+- **JIRA Integration**: Auto-populate standup notes with active sprint issues (with direct REST API)
+- **Auto-Checkbox**: Automatically check mentioned JIRA items in standup meetings
+- **Status Bar**: Real-time progress updates during processing
+- **Configurable**: Toggle features, customize paths, models, and team settings
 
 ## Requirements
 
 - **Obsidian** 1.0 or higher
-- **GitHub Copilot CLI** installed and authenticated
-- **Atlassian MCP Server** configured (for JIRA integration)
-- **GitHub Copilot SDK** (will be bundled with the plugin)
+- **GitHub Copilot CLI** installed and authenticated (`npm install -g @github/copilot-cli`)
+- **JIRA API Token** (optional, for JIRA integration)
+  - Get from: https://id.atlassian.com/manage-profile/security/api-tokens
 
 ## Installation
 
@@ -98,7 +101,12 @@ Meetings with "Green Standup" or "Magenta Standup" in the filename.
 Go to Settings → Community Plugins → Meeting Processor
 
 ### AI Settings
-- **Model**: Select AI model (Claude Sonnet 4, GPT-4.1, etc.)
+- **Model**: Select AI model (Claude Sonnet 4, Claude Sonnet 4.5, GPT-4.1, etc.)
+- **Copilot CLI Path**: Path to copilot executable (default: `copilot`)
+
+### Processing Preferences
+- **Auto-create People Profiles**: Automatically create People profiles for attendees (default: enabled)
+- **Auto-clean Transcripts**: Automatically clean transcripts (default: enabled)
 
 ### Vault Paths
 - **Meetings Folder**: Where meeting notes are stored (default: `Meetings`)
@@ -107,6 +115,9 @@ Go to Settings → Community Plugins → Meeting Processor
 - **Templates Folder**: Where templates are stored (default: `Templates`)
 
 ### JIRA Integration
+- **JIRA Email**: Your Atlassian account email
+- **JIRA API Token**: API token from Atlassian (see Requirements above)
+- **JIRA Base URL**: Your JIRA instance URL (default: `https://hpe.atlassian.net`)
 - **Green Team Board ID**: JIRA board for Green Team (default: `214`)
 - **Magenta Team Board ID**: JIRA board for Magenta Team (default: `331`)
 - **JIRA Project Key**: Project key for work items (default: `GLCP`)
@@ -173,31 +184,47 @@ The plugin uses markdown files in the `skills/` directory to define AI behavior.
 - Check console for errors (Cmd+Option+I)
 - Verify plugin files are in correct location
 
-### "Copilot SDK integration pending" error
-- This is expected in early versions
-- SDK integration is in progress
-- Watch for updates
+### Copilot CLI not found
+- Install: `npm install -g @github/copilot-cli`
+- Authenticate: `gh auth login` and enable Copilot
+- Or specify full path in settings (e.g., `/Users/you/.nvm/versions/node/v25.2.1/bin/copilot`)
 
 ### JIRA integration not working
-- Verify Atlassian MCP server is configured
-- Check board IDs in settings
-- Verify JIRA authentication
+- Verify JIRA email and API token in settings
+- Get token from: https://id.atlassian.com/manage-profile/security/api-tokens
+- Check board IDs match your team's boards
+- Check console (Cmd+Option+I) for detailed error messages
+
+### Vision extraction not working
+- Ensure Copilot CLI is installed and authenticated
+- Check that images are referenced with `![[SCR-filename.png]]` format
+- Images should be in vault (can be in Media folder or meeting folder)
+- Falls back to content extraction if vision fails
 
 ### Transcript cleaning issues
-- Check that transcript is in a recognized format
-- Try manual format selection (coming in future version)
-- Report format examples for improvement
+- Supported formats: Teams format 1-4
+- Cleaning only happens if no "Copilot Summary" section exists
+- Can be disabled in settings (Processing Preferences)
+
+### People profiles not being created
+- Check "Auto-create People Profiles" setting
+- Profiles are created in the configured People folder
+- Format: `Last, First.md` with frontmatter and aliases
 
 ## Roadmap
 
-- [ ] Complete Copilot SDK integration
-- [ ] Implement all transcript cleaning formats
-- [ ] Add attendee extraction from screenshots
-- [ ] Complete JIRA integration
-- [ ] Add summary generation
+- [x] Complete Copilot CLI integration
+- [x] Implement all transcript cleaning formats
+- [x] Add attendee extraction from screenshots
+- [x] Complete JIRA integration with auto-checkbox
+- [x] Add summary generation
+- [x] Add People profile management
+- [x] Add user preferences for toggling features
 - [ ] Add hotkey customization
 - [ ] Add transcript format selection UI
 - [ ] Submit to Obsidian Community Plugins
+- [ ] Add batch processing for multiple meetings
+- [ ] Add custom meeting type detection
 
 ## Contributing
 
