@@ -40,7 +40,7 @@ export class JiraFormatter {
 		} else if (statusLower.includes('blocked')) {
 			return '🔴'; // Blocked
 		} else {
-			return '⚪'; // To Do / Other
+			return '🔵'; // To Do / Other (changed from ⚪ for better visibility)
 		}
 	}
 
