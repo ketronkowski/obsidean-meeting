@@ -6,6 +6,8 @@ import { SkillLoader } from '../skill-loader';
 import { TranscriptDetector } from '../transcript';
 import { StatusBarManager } from '../ui/status-bar';
 import { JiraManager } from '../jira/manager';
+import { PeopleManager } from '../people-manager';
+import { JiraKeyExtractor } from '../jira/extractor';
 
 /**
  * Handles processing of standup meetings
@@ -18,6 +20,8 @@ export class StandupMeetingHandler {
 	private transcriptDetector: TranscriptDetector;
 	private statusBar: StatusBarManager;
 	private jiraManager: JiraManager;
+	private peopleManager: PeopleManager;
+	private jiraExtractor: JiraKeyExtractor;
 
 	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader, statusBar: StatusBarManager) {
 		this.app = app;
@@ -27,6 +31,8 @@ export class StandupMeetingHandler {
 		this.transcriptDetector = new TranscriptDetector();
 		this.statusBar = statusBar;
 		this.jiraManager = new JiraManager(copilotClient, settings);
+		this.peopleManager = new PeopleManager(app);
+		this.jiraExtractor = new JiraKeyExtractor();
 	}
 
 	/**
@@ -181,7 +187,152 @@ export class StandupMeetingHandler {
 
 	private async processAttendees(file: TFile, content: string): Promise<void> {
 		console.log('Processing standup attendees...');
-		// TODO: Similar to general meeting attendee processing
+		
+		// Check for screenshot references
+		const screenshotPattern = /!\[\[(SCR-[^\]]+\.png)\]\]/g;
+		const screenshots: string[] = [];
+		let match;
+		
+		while ((match = screenshotPattern.exec(content)) !== null) {
+			screenshots.push(match[1]);
+		}
+
+		let extractedNames: string[] = [];
+
+		// Try screenshots first if available
+		if (screenshots.length > 0) {
+			console.log(`Found ${screenshots.length} screenshots for attendee extraction`);
+			extractedNames = await this.extractFromScreenshots(file, screenshots);
+		}
+		
+		// Fall back to content extraction if screenshots didn't work
+		if (extractedNames.length === 0) {
+			console.log('Falling back to content extraction');
+			extractedNames = await this.extractFromContent(content);
+		}
+
+		if (extractedNames.length > 0) {
+			console.log(`Extracted ${extractedNames.length} attendees:`, extractedNames);
+			await this.updateAttendeesSection(file, extractedNames);
+		} else {
+			console.log('No attendees extracted');
+		}
+	}
+
+	/**
+	 * Extract attendees from screenshot images using Copilot vision
+	 */
+	private async extractFromScreenshots(file: TFile, screenshots: string[]): Promise<string[]> {
+		console.log('Extracting attendees from screenshots using vision...');
+		
+		const allNames: Set<string> = new Set();
+		let visionFailed = false;
+		
+		for (const screenshot of screenshots) {
+			try {
+				const imagePath = this.app.metadataCache.getFirstLinkpathDest(screenshot, file.path);
+				if (!imagePath) {
+					console.warn(`Screenshot not found: ${screenshot}`);
+					continue;
+				}
+
+				const adapter = this.app.vault.adapter;
+				const fullPath = (adapter as any).getFullPath(imagePath.path);
+				
+				const prompt = `Extract all participant names from this Microsoft Teams meeting screenshot. Output ONLY a comma-separated list of full names like: "First Last, First Last". No other text or explanation.`;
+
+				const response = await this.copilotClient.analyzeImageWithCLI(fullPath, prompt);
+				console.log('Vision response:', response);
+				
+				if (response.includes("don't see") || response.includes("cannot see") || 
+				    response.includes("no image") || response.includes("Please provide") ||
+				    response.includes("error") || response.length === 0) {
+					console.warn('Vision analysis failed');
+					visionFailed = true;
+					break;
+				}
+				
+				let namesList = response.trim();
+				if (namesList.includes('\n')) {
+					const lines = namesList.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+					const namesLine = lines.find(l => l.includes(',') && !l.includes(':') && l.split(',').length > 1);
+					if (namesLine) {
+						namesList = namesLine;
+					}
+				}
+				
+				if (namesList && namesList !== 'NO_NAMES_FOUND') {
+					const names = namesList.split(',').map(n => n.trim()).filter(n => 
+						n.length > 0 && n.length < 100 && !/don't|cannot|please/i.test(n)
+					);
+					names.forEach(name => allNames.add(name));
+					console.log(`Extracted ${names.length} names from ${screenshot}`);
+				}
+			} catch (error) {
+				console.error(`Error processing screenshot ${screenshot}:`, error);
+				visionFailed = true;
+			}
+		}
+		
+		if (visionFailed || allNames.size === 0) {
+			return [];
+		}
+		
+		return Array.from(allNames);
+	}
+
+	/**
+	 * Extract attendees from meeting content (fallback method)
+	 */
+	private async extractFromContent(content: string): Promise<string[]> {
+		console.log('Extracting attendees from content...');
+		
+		const names: Set<string> = new Set();
+		const speakerPattern = /(?:\[([^\]]+)\]|^\*\*([^:*]+):\*\*)/gm;
+		let match;
+		
+		while ((match = speakerPattern.exec(content)) !== null) {
+			const name = (match[1] || match[2]).trim();
+			if (name && name.length > 2 && name.length < 50) {
+				names.add(name);
+			}
+		}
+		
+		return Array.from(names);
+	}
+
+	/**
+	 * Update Attendees section with extracted names and links to People profiles
+	 */
+	private async updateAttendeesSection(file: TFile, names: string[]): Promise<void> {
+		console.log('Updating Attendees section...');
+		
+		const attendeeLinks: string[] = [];
+		
+		for (const name of names) {
+			const profile = await this.peopleManager.getOrCreateProfile(name);
+			attendeeLinks.push(`- [[${profile.displayName}]]`);
+		}
+		
+		const content = await this.app.vault.read(file);
+		const attendeesSection = `# Attendees\n\n${attendeeLinks.join('\n')}`;
+		
+		const attendeesRegex = /# Attendees\s*\n[\s\S]*?(?=\n#|$)/;
+		let newContent: string;
+		
+		if (attendeesRegex.test(content)) {
+			newContent = content.replace(attendeesRegex, attendeesSection + '\n');
+		} else {
+			const frontmatterRegex = /^---\s*\n[\s\S]*?\n---\s*\n/;
+			if (frontmatterRegex.test(content)) {
+				newContent = content.replace(frontmatterRegex, (match) => match + '\n' + attendeesSection + '\n');
+			} else {
+				newContent = attendeesSection + '\n\n' + content;
+			}
+		}
+		
+		await this.app.vault.modify(file, newContent);
+		console.log('Attendees section updated');
 	}
 
 	private async cleanTranscript(file: TFile): Promise<void> {
@@ -284,7 +435,41 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 
 	private async extractJiraUpdates(file: TFile, content: string): Promise<void> {
 		console.log('Extracting JIRA updates...');
-		// TODO: Find JIRA key mentions in content
-		// TODO: Add update comments to JIRA items
+		this.statusBar.show('Checking JIRA mentions...', 0);
+		
+		try {
+			// Extract content to analyze
+			const relevantContent = this.jiraExtractor.extractRelevantContent(content);
+			
+			if (!relevantContent || relevantContent.trim().length < 20) {
+				console.log('No content to analyze for JIRA keys');
+				return;
+			}
+			
+			// Extract JIRA keys
+			const matches = this.jiraExtractor.extractKeys(relevantContent);
+			
+			if (matches.length === 0) {
+				console.log('No JIRA keys found in content');
+				return;
+			}
+			
+			// Get just the keys for checkbox updates
+			const mentionedKeys = matches.map(m => m.key);
+			console.log(`Found ${mentionedKeys.length} JIRA keys:`, mentionedKeys);
+			
+			// Update checkboxes in JIRA section
+			const updatedContent = this.jiraExtractor.updateJiraSection(content, mentionedKeys);
+			
+			if (updatedContent !== content) {
+				await this.app.vault.modify(file, updatedContent);
+				console.log('JIRA section updated with checked items');
+			} else {
+				console.log('No JIRA items were checked (keys may not match items in JIRA section)');
+			}
+		} catch (error) {
+			console.error('Error extracting JIRA updates:', error);
+			// Don't throw - this is not critical
+		}
 	}
 }
