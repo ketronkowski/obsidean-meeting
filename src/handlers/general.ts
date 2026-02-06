@@ -66,19 +66,214 @@ export class GeneralMeetingHandler {
 		console.log('Processing attendees...');
 		
 		// Check for screenshot references
-		const screenshotPattern = /!\[\[SCR-.*?\.png\]\]/g;
-		const screenshots = content.match(screenshotPattern);
-
-		if (screenshots && screenshots.length > 0) {
-			// TODO: Use Copilot vision to extract names from screenshots
-			console.log('Found screenshots for attendee extraction:', screenshots);
-		} else {
-			// TODO: Extract names from meeting content
-			console.log('No screenshots found, will extract from content');
+		const screenshotPattern = /!\[\[(SCR-[^\]]+\.png)\]\]/g;
+		const screenshots: string[] = [];
+		let match;
+		
+		while ((match = screenshotPattern.exec(content)) !== null) {
+			screenshots.push(match[1]);
 		}
 
-		// TODO: Create missing People profiles
-		// TODO: Update Attendees section
+		let extractedNames: string[] = [];
+
+		// Try screenshots first if available
+		if (screenshots.length > 0) {
+			console.log(`Found ${screenshots.length} screenshots for attendee extraction`);
+			extractedNames = await this.extractFromScreenshots(file, screenshots);
+		}
+		
+		// Fall back to content extraction if screenshots didn't work
+		if (extractedNames.length === 0) {
+			console.log('Falling back to content extraction');
+			extractedNames = await this.extractFromContent(content);
+		}
+
+		if (extractedNames.length > 0) {
+			console.log(`Extracted ${extractedNames.length} attendees:`, extractedNames);
+			await this.updateAttendeesSection(file, extractedNames);
+		} else {
+			console.log('No attendees extracted');
+		}
+	}
+
+	/**
+	 * Extract attendees from screenshot images using Copilot vision
+	 */
+	private async extractFromScreenshots(file: TFile, screenshots: string[]): Promise<string[]> {
+		console.log('Extracting attendees from screenshots using vision...');
+		
+		const allNames: Set<string> = new Set();
+		let visionFailed = false;
+		
+		for (const screenshot of screenshots) {
+			try {
+				// Get the image file from the vault
+				const imagePath = this.app.metadataCache.getFirstLinkpathDest(screenshot, file.path);
+				if (!imagePath) {
+					console.warn(`Screenshot not found: ${screenshot}`);
+					continue;
+				}
+
+				console.log(`Processing screenshot: ${screenshot}`);
+				
+				// Get the full filesystem path to the image
+				const adapter = this.app.vault.adapter;
+				const fullPath = (adapter as any).getFullPath(imagePath.path);
+				console.log('Full image path:', fullPath);
+
+				const prompt = `Extract all participant names from this Microsoft Teams meeting screenshot. Output ONLY a comma-separated list of full names like: "First Last, First Last". No other text or explanation.`;
+
+				// Use CLI directly for vision analysis
+				console.log('Using Copilot CLI directly for vision analysis...');
+				const response = await this.copilotClient.analyzeImageWithCLI(fullPath, prompt);
+				console.log('Vision response:', response);
+				
+				// Check if vision actually worked
+				if (response.includes("don't see") || response.includes("cannot see") || 
+				    response.includes("no image") || response.includes("Please provide") ||
+				    response.includes("error") || response.length === 0) {
+					console.warn('Vision analysis failed, will fall back to content extraction');
+					visionFailed = true;
+					break;
+				}
+				
+				// Parse the response - extract just the names part if there's extra text
+				let namesList = response.trim();
+				
+				// If response contains multiple lines, try to find the line with names
+				if (namesList.includes('\n')) {
+					const lines = namesList.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+					// Look for a line that looks like comma-separated names
+					const namesLine = lines.find(l => l.includes(',') && !l.includes(':') && l.split(',').length > 1);
+					if (namesLine) {
+						namesList = namesLine;
+					}
+				}
+				
+				// Parse the names
+				if (namesList && namesList !== 'NO_NAMES_FOUND') {
+					const names = namesList.split(',').map(n => n.trim()).filter(n => 
+						n.length > 0 && 
+						n.length < 100 &&
+						!/don't|cannot|please/i.test(n)  // Filter out error messages
+					);
+					names.forEach(name => allNames.add(name));
+					console.log(`Extracted ${names.length} names from ${screenshot}:`, names);
+				}
+				
+			} catch (error) {
+				console.error(`Error processing screenshot ${screenshot}:`, error);
+				visionFailed = true;
+			}
+		}
+		
+		// If vision failed, try content extraction as fallback
+		if (visionFailed || allNames.size === 0) {
+			console.log('Vision extraction failed or returned no names, falling back to content extraction');
+			return [];  // Return empty so caller can try content extraction
+		}
+		
+		return Array.from(allNames);
+	}
+
+	/**
+	 * Extract attendees from meeting content (fallback method)
+	 */
+	private async extractFromContent(content: string): Promise<string[]> {
+		console.log('Extracting attendees from content (fallback - limited capability)...');
+		
+		// Look for speaker patterns in transcript: [Speaker Name] or **Speaker Name:**
+		const speakers = new Set<string>();
+		
+		// Pattern 1: [Speaker Name] format (but not image references)
+		const bracketPattern = /\[([^\]]+)\]/g;
+		let match;
+		
+		while ((match = bracketPattern.exec(content)) !== null) {
+			const speaker = match[1].trim();
+			// Skip image references but keep speaker labels
+			if (!speaker.includes('.png') &&          // Skip image filenames
+			    !speaker.includes('.jpg') &&          // Skip image filenames
+			    speaker.length > 3 &&                 // Reasonable name length
+			    speaker.length < 50 &&                // Not too long
+			    /[a-zA-Z]/.test(speaker)) {           // Contains letters
+				speakers.add(speaker);
+			}
+		}
+		
+		// Pattern 2: **Name:** format (common in some transcripts)
+		const boldPattern = /\*\*([^*:]+):\*\*/g;
+		while ((match = boldPattern.exec(content)) !== null) {
+			const speaker = match[1].trim();
+			if (speaker.length > 3 && speaker.length < 50) {
+				speakers.add(speaker);
+			}
+		}
+		
+		console.log(`Found ${speakers.size} potential speakers in content:`, Array.from(speakers));
+		
+		// If we only found generic speakers, warn the user
+		const allGeneric = Array.from(speakers).every(s => /^Speaker \d+$/i.test(s));
+		if (allGeneric && speakers.size > 0) {
+			console.warn('Only generic speaker labels found (Speaker 1, Speaker 2, etc.). Vision API would provide real names from screenshots.');
+		}
+		
+		return Array.from(speakers);
+	}
+
+	/**
+	 * Update the Attendees section with extracted names
+	 */
+	private async updateAttendeesSection(file: TFile, names: string[]): Promise<void> {
+		console.log('Updating Attendees section...');
+		
+		const content = await this.app.vault.read(file);
+		
+		// Build the attendees list
+		const attendeesList = names.map(name => {
+			// Check if a People profile exists
+			const profilePath = `People/${name}.md`;
+			const profileFile = this.app.metadataCache.getFirstLinkpathDest(profilePath, '');
+			
+			if (profileFile) {
+				// Link to existing profile
+				return `- [[${name}]]`;
+			} else {
+				// Plain text (profile doesn't exist yet)
+				return `- ${name}`;
+			}
+		}).join('\n');
+		
+		const attendeesContent = `\n## In Meeting (${names.length})\n${attendeesList}\n`;
+		
+		// Find and update the Attendees section
+		const attendeesRegex = /# Attendees\s*\n([\s\S]*?)(?=\n+#\s)/;
+		let newContent: string;
+		
+		if (attendeesRegex.test(content)) {
+			// Replace existing content
+			newContent = content.replace(attendeesRegex, `# Attendees${attendeesContent}\n`);
+		} else {
+			// Couldn't find section (shouldn't happen)
+			console.warn('Attendees section not found in file');
+			return;
+		}
+		
+		await this.app.vault.modify(file, newContent);
+		console.log('Attendees section updated');
+	}
+
+	/**
+	 * Convert ArrayBuffer to base64 string
+	 */
+	private arrayBufferToBase64(buffer: ArrayBuffer): string {
+		let binary = '';
+		const bytes = new Uint8Array(buffer);
+		const len = bytes.byteLength;
+		for (let i = 0; i < len; i++) {
+			binary += String.fromCharCode(bytes[i]);
+		}
+		return btoa(binary);
 	}
 
 	/**

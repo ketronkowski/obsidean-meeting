@@ -83,6 +83,85 @@ export class CopilotClientManager {
 	}
 
 	/**
+	 * Use Copilot CLI directly for vision analysis
+	 * The CLI supports vision when files are referenced in the prompt
+	 */
+	async analyzeImageWithCLI(imagePath: string, prompt: string): Promise<string> {
+		const { spawn } = require('child_process');
+		
+		return new Promise((resolve, reject) => {
+			const cliPath = this.settings.copilotCliPath || 'copilot';
+			
+			console.log('Spawning CLI for image analysis:', cliPath);
+			console.log('Image path:', imagePath);
+			
+			// Reference the file directly in the prompt - this is how CLI does vision
+			const fullPrompt = `process the file [📷 ${imagePath}] to determine the names of people listed. Output ONLY a comma-separated list of full names with no other text.`;
+			
+			// Use non-interactive mode with -p flag
+			const process = spawn(cliPath, ['-p', fullPrompt], {
+				stdio: ['pipe', 'pipe', 'pipe']
+			});
+			
+			let stdout = '';
+			let stderr = '';
+			
+			process.stdout.on('data', (data: Buffer) => {
+				stdout += data.toString();
+			});
+			
+			process.stderr.on('data', (data: Buffer) => {
+				stderr += data.toString();
+			});
+			
+			process.on('close', (code: number) => {
+				if (code !== 0) {
+					console.error('CLI error:', stderr);
+					reject(new Error(`CLI exited with code ${code}: ${stderr}`));
+				} else {
+					console.log('CLI raw response:', stdout);
+					resolve(stdout.trim());
+				}
+			});
+			
+			process.on('error', (error: Error) => {
+				console.error('Failed to spawn CLI:', error);
+				reject(error);
+			});
+		});
+	}
+
+	/**
+	 * Send a prompt with an image file for vision analysis
+	 */
+	async sendVisionPrompt(prompt: string, imagePathOrBase64: string, isFilePath: boolean = false): Promise<string> {
+		if (!this.activeSession) {
+			await this.createSession();
+		}
+
+		// Try different context formats to see what works
+		let context: any;
+		
+		if (isFilePath) {
+			// Try passing file path directly
+			console.log('Attempting vision with file path:', imagePathOrBase64);
+			context = {
+				files: [{ path: imagePathOrBase64, type: 'image' }]
+			};
+		} else {
+			// Try base64 format
+			context = {
+				images: [{
+					data: imagePathOrBase64,
+					mimeType: 'image/png'
+				}]
+			};
+		}
+
+		return this.sendPrompt(prompt, context);
+	}
+
+	/**
 	 * Send a prompt and wait for complete response
 	 */
 	async sendPrompt(prompt: string, context?: any): Promise<string> {
