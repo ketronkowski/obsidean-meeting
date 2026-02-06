@@ -13,6 +13,9 @@ export interface MeetingProcessorSettings {
 	templatesFolder: string;
 	
 	// JIRA Integration
+	jiraEmail: string;
+	jiraApiToken: string;
+	jiraBaseUrl: string;
 	greenBoardId: string;
 	magentaBoardId: string;
 	jiraProjectKey: string;
@@ -29,6 +32,9 @@ export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	peopleFolder: 'People',
 	mediaFolder: 'Media',
 	templatesFolder: 'Templates',
+	jiraEmail: '',
+	jiraApiToken: '',
+	jiraBaseUrl: 'https://hpe.atlassian.net',
 	greenBoardId: '214',
 	magentaBoardId: '331',
 	jiraProjectKey: 'GLCP',
@@ -127,6 +133,43 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 
 		// JIRA Integration
 		containerEl.createEl('h2', { text: 'JIRA Integration' });
+
+		new Setting(containerEl)
+			.setName('JIRA Email')
+			.setDesc('Your Atlassian account email address')
+			.addText(text => text
+				.setPlaceholder('you@example.com')
+				.setValue(this.plugin.settings.jiraEmail)
+				.onChange(async (value) => {
+					this.plugin.settings.jiraEmail = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('JIRA API Token')
+			.setDesc('Create at: https://id.atlassian.com/manage-profile/security/api-tokens (can reuse token from JIRA Issue plugin)')
+			.addText(text => {
+				text.inputEl.type = 'password';
+				text.setPlaceholder('Your API token')
+					.setValue(this.plugin.settings.jiraApiToken)
+					.onChange(async (value) => {
+						this.plugin.settings.jiraApiToken = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName('JIRA Base URL')
+			.setDesc('Your Atlassian instance URL')
+			.addText(text => text
+				.setPlaceholder('https://hpe.atlassian.net')
+				.setValue(this.plugin.settings.jiraBaseUrl)
+				.onChange(async (value) => {
+					this.plugin.settings.jiraBaseUrl = value;
+					await this.plugin.saveSettings();
+				}));
+		
+		containerEl.createEl('h3', { text: 'Board Configuration' });
 
 		new Setting(containerEl)
 			.setName('Green Team Board ID')

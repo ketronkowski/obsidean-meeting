@@ -26,7 +26,7 @@ export class StandupMeetingHandler {
 		this.skillLoader = skillLoader;
 		this.transcriptDetector = new TranscriptDetector();
 		this.statusBar = statusBar;
-		this.jiraManager = new JiraManager(copilotClient);
+		this.jiraManager = new JiraManager(copilotClient, settings);
 	}
 
 	/**
