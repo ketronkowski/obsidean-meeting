@@ -4,6 +4,7 @@ import { CopilotClientManager } from '../copilot-client';
 import { SkillLoader } from '../skill-loader';
 import { TranscriptDetector } from '../transcript';
 import { PeopleManager } from '../people-manager';
+import { StatusBarManager } from '../ui/status-bar';
 
 /**
  * Handles processing of general (non-standup) meetings
@@ -15,14 +16,16 @@ export class GeneralMeetingHandler {
 	private skillLoader: SkillLoader;
 	private transcriptDetector: TranscriptDetector;
 	private peopleManager: PeopleManager;
+	private statusBar: StatusBarManager;
 
-	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
+	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader, statusBar: StatusBarManager) {
 		this.app = app;
 		this.settings = settings;
 		this.copilotClient = copilotClient;
 		this.skillLoader = skillLoader;
 		this.transcriptDetector = new TranscriptDetector();
 		this.peopleManager = new PeopleManager(app);
+		this.statusBar = statusBar;
 	}
 
 	/**
@@ -31,24 +34,33 @@ export class GeneralMeetingHandler {
 	async process(file: TFile): Promise<void> {
 		console.log('Processing general meeting:', file.basename);
 
-		// Read the meeting content
-		const content = await this.app.vault.read(file);
+		try {
+			// Read the meeting content
+			const content = await this.app.vault.read(file);
 
-		// Check if already has Copilot Summary (skip transcript cleaning if so)
-		const hasCopilotSummary = this.hasCopilotSummary(content);
+			// Check if already has Copilot Summary (skip transcript cleaning if so)
+			const hasCopilotSummary = this.hasCopilotSummary(content);
 
-		// 1. Extract/populate attendees
-		await this.processAttendees(file, content);
+			// 1. Extract/populate attendees
+			this.statusBar.show('Extracting attendees...', 0);
+			await this.processAttendees(file, content);
 
-		// 2. Clean transcript (if no Copilot Summary)
-		if (!hasCopilotSummary) {
-			await this.cleanTranscript(file);
+			// 2. Clean transcript (if no Copilot Summary)
+			if (!hasCopilotSummary) {
+				this.statusBar.show('Cleaning transcript...', 0);
+				await this.cleanTranscript(file);
+			}
+
+			// 3. Generate summary
+			this.statusBar.show('Generating summary...', 0);
+			await this.generateSummary(file);
+
+			this.statusBar.show('Complete!', 2000);
+			console.log('General meeting processing complete');
+		} catch (error) {
+			this.statusBar.show('Error processing meeting', 3000);
+			throw error;
 		}
-
-		// 3. Generate summary
-		await this.generateSummary(file);
-
-		console.log('General meeting processing complete');
 	}
 
 	/**

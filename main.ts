@@ -27,7 +27,7 @@ export default class MeetingProcessorPlugin extends Plugin {
 		this.skillLoader = new SkillLoader(this.app, pluginDir);
 		await this.skillLoader.loadAll();
 		
-		this.router = new MeetingRouter(this.app, this.settings, this.copilotClient, this.skillLoader);
+		this.router = new MeetingRouter(this.app, this.settings, this.copilotClient, this.skillLoader, this.statusBar);
 
 		// Add ribbon icon
 		this.addRibbonIcon('brain-circuit', 'Process Meeting', async () => {

@@ -4,6 +4,7 @@ import { CopilotClientManager } from '../copilot-client';
 import { detectTeam } from '../validators';
 import { SkillLoader } from '../skill-loader';
 import { TranscriptDetector } from '../transcript';
+import { StatusBarManager } from '../ui/status-bar';
 
 /**
  * Handles processing of standup meetings
@@ -14,13 +15,15 @@ export class StandupMeetingHandler {
 	private copilotClient: CopilotClientManager;
 	private skillLoader: SkillLoader;
 	private transcriptDetector: TranscriptDetector;
+	private statusBar: StatusBarManager;
 
-	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
+	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader, statusBar: StatusBarManager) {
 		this.app = app;
 		this.settings = settings;
 		this.copilotClient = copilotClient;
 		this.skillLoader = skillLoader;
 		this.transcriptDetector = new TranscriptDetector();
+		this.statusBar = statusBar;
 	}
 
 	/**
@@ -29,25 +32,31 @@ export class StandupMeetingHandler {
 	async process(file: TFile): Promise<void> {
 		console.log('Processing standup meeting:', file.basename);
 
-		const team = detectTeam(file);
-		if (!team) {
-			throw new Error('Could not determine team from filename');
+		try {
+			const team = detectTeam(file);
+			if (!team) {
+				throw new Error('Could not determine team from filename');
+			}
+
+			const boardId = team === 'green' ? this.settings.greenBoardId : this.settings.magentaBoardId;
+			console.log(`Detected ${team} team standup (board ${boardId})`);
+
+			// Read content to determine mode
+			const content = await this.app.vault.read(file);
+			const mode = this.detectMode(content);
+
+			if (mode === 'pre-meeting') {
+				await this.processPreMeeting(file, boardId);
+			} else {
+				await this.processPostMeeting(file, boardId);
+			}
+
+			this.statusBar.show('Complete!', 2000);
+			console.log('Standup meeting processing complete');
+		} catch (error) {
+			this.statusBar.show('Error processing standup', 3000);
+			throw error;
 		}
-
-		const boardId = team === 'green' ? this.settings.greenBoardId : this.settings.magentaBoardId;
-		console.log(`Detected ${team} team standup (board ${boardId})`);
-
-		// Read content to determine mode
-		const content = await this.app.vault.read(file);
-		const mode = this.detectMode(content);
-
-		if (mode === 'pre-meeting') {
-			await this.processPreMeeting(file, boardId);
-		} else {
-			await this.processPostMeeting(file, boardId);
-		}
-
-		console.log('Standup meeting processing complete');
 	}
 
 	/**
@@ -71,6 +80,7 @@ export class StandupMeetingHandler {
 	 */
 	private async processPreMeeting(file: TFile, boardId: string): Promise<void> {
 		console.log('Pre-meeting mode: populating JIRA section...');
+		this.statusBar.show('Querying JIRA...', 0);
 
 		// TODO: Query active sprint issues via Atlassian MCP
 		// TODO: Group by assignee
@@ -90,15 +100,18 @@ export class StandupMeetingHandler {
 		const content = await this.app.vault.read(file);
 
 		// 1. Process attendees (screenshot or expected list)
+		this.statusBar.show('Processing attendees...', 0);
 		await this.processAttendees(file, content);
 
 		// 2. Clean transcript (if no Copilot Summary)
 		const hasCopilotSummary = this.hasCopilotSummary(content);
 		if (!hasCopilotSummary) {
+			this.statusBar.show('Cleaning transcript...', 0);
 			await this.cleanTranscript(file);
 		}
 
 		// 3. Generate summary
+		this.statusBar.show('Generating summary...', 0);
 		await this.generateSummary(file);
 
 		// 4. Extract JIRA updates mentioned in meeting
