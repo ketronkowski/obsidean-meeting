@@ -5,6 +5,7 @@ import { detectTeam } from '../validators';
 import { SkillLoader } from '../skill-loader';
 import { TranscriptDetector } from '../transcript';
 import { StatusBarManager } from '../ui/status-bar';
+import { JiraManager } from '../jira/manager';
 
 /**
  * Handles processing of standup meetings
@@ -16,6 +17,7 @@ export class StandupMeetingHandler {
 	private skillLoader: SkillLoader;
 	private transcriptDetector: TranscriptDetector;
 	private statusBar: StatusBarManager;
+	private jiraManager: JiraManager;
 
 	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader, statusBar: StatusBarManager) {
 		this.app = app;
@@ -24,6 +26,7 @@ export class StandupMeetingHandler {
 		this.skillLoader = skillLoader;
 		this.transcriptDetector = new TranscriptDetector();
 		this.statusBar = statusBar;
+		this.jiraManager = new JiraManager(copilotClient);
 	}
 
 	/**
@@ -82,13 +85,51 @@ export class StandupMeetingHandler {
 		console.log('Pre-meeting mode: populating JIRA section...');
 		this.statusBar.show('Querying JIRA...', 0);
 
-		// TODO: Query active sprint issues via Atlassian MCP
-		// TODO: Group by assignee
-		// TODO: Format with checkboxes, icons, status, links
-		// TODO: Populate expected attendees from recent standups
+		try {
+			// Query and format JIRA issues
+			const jiraSection = await this.jiraManager.queryAndFormatSprint(
+				boardId,
+				this.settings.jiraProjectKey
+			);
 
-		// For now, placeholder
-		console.log(`Would query JIRA board ${boardId}`);
+			// Insert into file
+			await this.insertJiraSection(file, jiraSection);
+
+			console.log('JIRA section populated successfully');
+		} catch (error) {
+			console.error('Error populating JIRA section:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * Insert or update JIRA section in meeting file
+	 */
+	private async insertJiraSection(file: TFile, jiraSection: string): Promise<void> {
+		const content = await this.app.vault.read(file);
+
+		// Check if JIRA section already exists
+		const jiraRegex = /## JIRA\s*\n[\s\S]*?(?=\n##|$)/;
+		let newContent: string;
+
+		if (jiraRegex.test(content)) {
+			// Replace existing section
+			newContent = content.replace(jiraRegex, jiraSection + '\n');
+		} else {
+			// Insert after Attendees section if it exists, otherwise at top
+			const attendeesRegex = /## Attendees\s*\n[\s\S]*?(?=\n##|$)/;
+			if (attendeesRegex.test(content)) {
+				newContent = content.replace(
+					attendeesRegex,
+					(match) => match + '\n' + jiraSection + '\n'
+				);
+			} else {
+				// Insert at the beginning
+				newContent = jiraSection + '\n\n' + content;
+			}
+		}
+
+		await this.app.vault.modify(file, newContent);
 	}
 
 	/**
