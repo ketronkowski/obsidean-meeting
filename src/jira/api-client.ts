@@ -59,6 +59,11 @@ export class JiraApiClient {
 				}
 			});
 
+			if (response.status !== 200) {
+				console.error('JIRA API error:', response.status, response.text);
+				throw new Error(`JIRA API error (${response.status}): ${response.text}`);
+			}
+
 			console.log(`JIRA returned ${response.json.issues?.length || 0} issues`);
 
 			// Transform to our format
@@ -66,6 +71,74 @@ export class JiraApiClient {
 
 		} catch (error) {
 			console.error('Error querying JIRA:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * Query issues for a specific board's active sprint using Agile API
+	 */
+	async searchBoardSprintIssues(boardId: string, maxResults: number = 100): Promise<JiraIssue[]> {
+		if (!this.isConfigured()) {
+			throw new Error('JIRA credentials not configured. Please add email and API token in settings.');
+		}
+
+		try {
+			// First, get the active sprint for this board
+			const sprintUrl = `${this.settings.jiraBaseUrl}/rest/agile/1.0/board/${boardId}/sprint?state=active`;
+			
+			console.log('Getting active sprint for board:', boardId);
+			
+			const sprintResponse = await requestUrl({
+				url: sprintUrl,
+				method: 'GET',
+				headers: {
+					'Authorization': this.getAuthHeader(),
+					'Accept': 'application/json'
+				}
+			});
+
+			if (sprintResponse.status !== 200) {
+				throw new Error(`Failed to get active sprint: ${sprintResponse.status}`);
+			}
+
+			const sprints = sprintResponse.json.values || [];
+			if (sprints.length === 0) {
+				console.log('No active sprint found for board');
+				return [];
+			}
+
+			const activeSprint = sprints[0];
+			console.log('Active sprint:', activeSprint.id, activeSprint.name);
+
+			// Now get issues for this sprint
+			const issuesUrl = `${this.settings.jiraBaseUrl}/rest/agile/1.0/board/${boardId}/sprint/${activeSprint.id}/issue`;
+			const params = new URLSearchParams({
+				maxResults: maxResults.toString(),
+				fields: 'summary,status,assignee'
+			});
+
+			console.log('Querying sprint issues:', issuesUrl);
+
+			const issuesResponse = await requestUrl({
+				url: `${issuesUrl}?${params}`,
+				method: 'GET',
+				headers: {
+					'Authorization': this.getAuthHeader(),
+					'Accept': 'application/json'
+				}
+			});
+
+			if (issuesResponse.status !== 200) {
+				throw new Error(`Failed to get sprint issues: ${issuesResponse.status}`);
+			}
+
+			console.log(`JIRA returned ${issuesResponse.json.issues?.length || 0} issues`);
+
+			return this.transformIssues(issuesResponse.json.issues || []);
+
+		} catch (error) {
+			console.error('Error querying board sprint:', error);
 			throw error;
 		}
 	}

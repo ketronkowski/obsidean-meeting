@@ -25,11 +25,8 @@ export class JiraManager {
 	 */
 	async queryAndFormatSprint(boardId: string, projectKey: string): Promise<string> {
 		try {
-			// Build JQL query
-			const jql = `project = ${projectKey} AND sprint in openSprints() AND board = ${boardId} ORDER BY assignee, status`;
-			
-			// Query issues using direct API
-			const issues = await this.apiClient.searchIssues(jql, 100);
+			// Use board sprint API instead of JQL (board isn't a valid JQL field)
+			const issues = await this.apiClient.searchBoardSprintIssues(boardId, 100);
 			console.log(`Found ${issues.length} issues in active sprint`);
 
 			if (issues.length === 0) {
