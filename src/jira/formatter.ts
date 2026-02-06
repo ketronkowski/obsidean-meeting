@@ -15,7 +15,7 @@ export class JiraFormatter {
 		} else if (typeLower.includes('bug')) {
 			return '🐛';
 		} else if (typeLower.includes('task')) {
-			return '✅';
+			return '☑️'; // Changed from ✅ to avoid conflict with Done status
 		} else if (typeLower.includes('epic')) {
 			return '🎯';
 		} else if (typeLower.includes('subtask') || typeLower.includes('sub-task')) {
