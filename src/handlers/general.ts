@@ -3,6 +3,7 @@ import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { CopilotClientManager } from '../copilot-client';
 import { SkillLoader } from '../skill-loader';
 import { TranscriptDetector } from '../transcript';
+import { PeopleManager } from '../people-manager';
 
 /**
  * Handles processing of general (non-standup) meetings
@@ -13,6 +14,7 @@ export class GeneralMeetingHandler {
 	private copilotClient: CopilotClientManager;
 	private skillLoader: SkillLoader;
 	private transcriptDetector: TranscriptDetector;
+	private peopleManager: PeopleManager;
 
 	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader) {
 		this.app = app;
@@ -20,6 +22,7 @@ export class GeneralMeetingHandler {
 		this.copilotClient = copilotClient;
 		this.skillLoader = skillLoader;
 		this.transcriptDetector = new TranscriptDetector();
+		this.peopleManager = new PeopleManager(app);
 	}
 
 	/**
@@ -223,25 +226,22 @@ export class GeneralMeetingHandler {
 
 	/**
 	 * Update the Attendees section with extracted names
+	 * Creates People profiles and generates links
 	 */
 	private async updateAttendeesSection(file: TFile, names: string[]): Promise<void> {
 		console.log('Updating Attendees section...');
 		
 		const content = await this.app.vault.read(file);
 		
-		// Build the attendees list
-		const attendeesList = names.map(name => {
-			// Check if a People profile exists
-			const profilePath = `People/${name}.md`;
-			const profileFile = this.app.metadataCache.getFirstLinkpathDest(profilePath, '');
-			
-			if (profileFile) {
-				// Link to existing profile
-				return `- [[${name}]]`;
-			} else {
-				// Plain text (profile doesn't exist yet)
-				return `- ${name}`;
-			}
+		// Get or create profiles for each attendee
+		const profiles = await Promise.all(
+			names.map(name => this.peopleManager.getOrCreateProfile(name))
+		);
+		
+		// Build the attendees list with links
+		const attendeesList = profiles.map(profile => {
+			const link = this.peopleManager.generateLink(profile);
+			return `- ${link}`;
 		}).join('\n');
 		
 		const attendeesContent = `\n## In Meeting (${names.length})\n${attendeesList}\n`;
