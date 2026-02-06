@@ -12,6 +12,10 @@ export interface MeetingProcessorSettings {
 	mediaFolder: string;
 	templatesFolder: string;
 	
+	// Processing Preferences
+	autoCreateProfiles: boolean;
+	autoCleanTranscript: boolean;
+	
 	// JIRA Integration
 	jiraEmail: string;
 	jiraApiToken: string;
@@ -32,6 +36,8 @@ export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	peopleFolder: 'People',
 	mediaFolder: 'Media',
 	templatesFolder: 'Templates',
+	autoCreateProfiles: true,
+	autoCleanTranscript: true,
 	jiraEmail: '',
 	jiraApiToken: '',
 	jiraBaseUrl: 'https://hpe.atlassian.net',
@@ -128,6 +134,29 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.templatesFolder)
 				.onChange(async (value) => {
 					this.plugin.settings.templatesFolder = value;
+					await this.plugin.saveSettings();
+				}));
+
+		// Processing Preferences
+		containerEl.createEl('h2', { text: 'Processing Preferences' });
+
+		new Setting(containerEl)
+			.setName('Auto-create People Profiles')
+			.setDesc('Automatically create People profiles for extracted attendees')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoCreateProfiles)
+				.onChange(async (value) => {
+					this.plugin.settings.autoCreateProfiles = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Auto-clean Transcripts')
+			.setDesc('Automatically clean and format transcripts (only if no Copilot Summary exists)')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.autoCleanTranscript)
+				.onChange(async (value) => {
+					this.plugin.settings.autoCleanTranscript = value;
 					await this.plugin.saveSettings();
 				}));
 

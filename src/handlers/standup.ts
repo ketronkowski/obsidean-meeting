@@ -73,7 +73,7 @@ export class StandupMeetingHandler {
 	 */
 	private detectMode(content: string): 'pre-meeting' | 'post-meeting' {
 		// If there's a transcript section with content, it's post-meeting
-		const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (transcriptMatch) {
 			const transcriptContent = transcriptMatch[1].trim();
 			if (transcriptContent.length > 50) {
@@ -163,9 +163,9 @@ export class StandupMeetingHandler {
 		this.statusBar.show('Processing attendees...', 0);
 		await this.processAttendees(file, content);
 
-		// 2. Clean transcript (if no Copilot Summary)
+		// 2. Clean transcript (if no Copilot Summary and setting enabled)
 		const hasCopilotSummary = this.hasCopilotSummary(content);
-		if (!hasCopilotSummary) {
+		if (!hasCopilotSummary && this.settings.autoCleanTranscript) {
 			this.statusBar.show('Cleaning transcript...', 0);
 			await this.cleanTranscript(file);
 		}
@@ -179,7 +179,7 @@ export class StandupMeetingHandler {
 	}
 
 	private hasCopilotSummary(content: string): boolean {
-		const summaryMatch = content.match(/## Copilot Summary\s*\n([\s\S]*?)(?=\n##|$)/);
+		const summaryMatch = content.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (!summaryMatch) return false;
 		const summaryContent = summaryMatch[1].trim();
 		return summaryContent.length > 0;
@@ -310,8 +310,18 @@ export class StandupMeetingHandler {
 		const attendeeLinks: string[] = [];
 		
 		for (const name of names) {
-			const profile = await this.peopleManager.getOrCreateProfile(name);
-			attendeeLinks.push(`- [[${profile.displayName}]]`);
+			if (this.settings.autoCreateProfiles) {
+				const profile = await this.peopleManager.getOrCreateProfile(name);
+				attendeeLinks.push(`- [[${profile.displayName}]]`);
+			} else {
+				// Just find existing, don't create
+				const profile = await this.peopleManager.findProfile(name);
+				if (profile.exists) {
+					attendeeLinks.push(`- [[${profile.displayName}]]`);
+				} else {
+					attendeeLinks.push(`- ${name}`);
+				}
+			}
 		}
 		
 		const content = await this.app.vault.read(file);
@@ -341,7 +351,7 @@ export class StandupMeetingHandler {
 		const content = await this.app.vault.read(file);
 		
 		// Extract transcript section
-		const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (!transcriptMatch) {
 			console.log('No transcript section found');
 			return;
@@ -359,8 +369,8 @@ export class StandupMeetingHandler {
 
 		// Replace transcript section
 		const newContent = content.replace(
-			/## Transcript\s*\n[\s\S]*?(?=\n##|$)/,
-			`## Transcript\n\n${result.cleaned}\n\n`
+			/# Transcript\s*\n[\s\S]*?(?=\n#|$)/,
+			`# Transcript\n\n${result.cleaned}\n\n`
 		);
 
 		await this.app.vault.modify(file, newContent);
@@ -383,12 +393,12 @@ export class StandupMeetingHandler {
 		let contentToSummarize = '';
 		
 		// Check for Copilot Summary first
-		const copilotSummaryMatch = content.match(/## Copilot Summary\s*\n([\s\S]*?)(?=\n##|$)/);
+		const copilotSummaryMatch = content.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (copilotSummaryMatch && copilotSummaryMatch[1].trim()) {
 			contentToSummarize = copilotSummaryMatch[1].trim();
 		} else {
 			// Use transcript
-			const transcriptMatch = content.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+			const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 			if (transcriptMatch && transcriptMatch[1].trim()) {
 				contentToSummarize = transcriptMatch[1].trim();
 			}
@@ -416,13 +426,13 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 			const summary = await this.copilotClient.sendPrompt(prompt);
 			
 			// Update Summary section
-			const summaryRegex = /## Summary\s*\n[\s\S]*?(?=\n##|$)/;
+			const summaryRegex = /# Summary\s*\n[\s\S]*?(?=\n#|$)/;
 			let newContent: string;
 			
 			if (summaryRegex.test(content)) {
-				newContent = content.replace(summaryRegex, `## Summary\n\n${summary}\n\n`);
+				newContent = content.replace(summaryRegex, `# Summary\n\n${summary}\n\n`);
 			} else {
-				newContent = content + `\n\n## Summary\n\n${summary}\n`;
+				newContent = content + `\n\n# Summary\n\n${summary}\n`;
 			}
 
 			await this.app.vault.modify(file, newContent);

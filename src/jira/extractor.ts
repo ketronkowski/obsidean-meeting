@@ -70,19 +70,19 @@ export class JiraKeyExtractor {
 		let content = '';
 		
 		// 1. Check for Copilot Summary first
-		const copilotSummaryMatch = fileContent.match(/## Copilot Summary\s*\n([\s\S]*?)(?=\n##|$)/);
+		const copilotSummaryMatch = fileContent.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (copilotSummaryMatch && copilotSummaryMatch[1].trim()) {
 			content += copilotSummaryMatch[1].trim() + '\n\n';
 		}
 		
 		// 2. Include Transcript
-		const transcriptMatch = fileContent.match(/## Transcript\s*\n([\s\S]*?)(?=\n##|$)/);
+		const transcriptMatch = fileContent.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (transcriptMatch && transcriptMatch[1].trim()) {
 			content += transcriptMatch[1].trim() + '\n\n';
 		}
 		
 		// 3. Include Summary if present
-		const summaryMatch = fileContent.match(/## Summary\s*\n([\s\S]*?)(?=\n##|$)/);
+		const summaryMatch = fileContent.match(/# Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (summaryMatch && summaryMatch[1].trim()) {
 			content += summaryMatch[1].trim();
 		}

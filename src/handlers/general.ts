@@ -45,8 +45,8 @@ export class GeneralMeetingHandler {
 			this.statusBar.show('Extracting attendees...', 0);
 			await this.processAttendees(file, content);
 
-			// 2. Clean transcript (if no Copilot Summary)
-			if (!hasCopilotSummary) {
+			// 2. Clean transcript (if enabled, no Copilot Summary, and setting enabled)
+			if (!hasCopilotSummary && this.settings.autoCleanTranscript) {
 				this.statusBar.show('Cleaning transcript...', 0);
 				await this.cleanTranscript(file);
 			}
@@ -245,15 +245,27 @@ export class GeneralMeetingHandler {
 		
 		const content = await this.app.vault.read(file);
 		
-		// Get or create profiles for each attendee
+		// Get or create profiles for each attendee (respecting setting)
 		const profiles = await Promise.all(
-			names.map(name => this.peopleManager.getOrCreateProfile(name))
+			names.map(async name => {
+				if (this.settings.autoCreateProfiles) {
+					return await this.peopleManager.getOrCreateProfile(name);
+				} else {
+					// Just find existing profiles, don't create
+					return await this.peopleManager.findProfile(name);
+				}
+			})
 		);
 		
 		// Build the attendees list with links
 		const attendeesList = profiles.map(profile => {
-			const link = this.peopleManager.generateLink(profile);
-			return `- ${link}`;
+			if (profile.exists) {
+				const link = this.peopleManager.generateLink(profile);
+				return `- ${link}`;
+			} else {
+				// No profile and auto-create disabled, just use plain name
+				return `- ${profile.displayName}`;
+			}
 		}).join('\n');
 		
 		const attendeesContent = `\n## In Meeting (${names.length})\n${attendeesList}\n`;
