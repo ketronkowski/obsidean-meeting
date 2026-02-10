@@ -5,6 +5,7 @@ import { SkillLoader } from '../skill-loader';
 import { TranscriptDetector } from '../transcript';
 import { PeopleManager } from '../people-manager';
 import { StatusBarManager } from '../ui/status-bar';
+import * as mammoth from 'mammoth';
 
 /**
  * Handles processing of general (non-standup) meetings
@@ -524,19 +525,80 @@ ${contentToSummarize}`;
 			return null;
 		}
 
-		const transcriptContent = transcriptMatch[1].trim();
+		let transcriptContent = transcriptMatch[1].trim();
 		console.log('Transcript content length:', transcriptContent.length);
 		console.log('Transcript preview:', transcriptContent.substring(0, 200));
 
-		// Check if transcript is just a file reference (Word doc, etc.)
-		if (transcriptContent.length < 100 && (
+		// Check if transcript is a file reference (Word doc, etc.) and try to extract text
+		if (transcriptContent.length < 200 && (
 			transcriptContent.includes('.docx') ||
 			transcriptContent.includes('.doc') ||
-			transcriptContent.includes('.pdf') ||
 			transcriptContent.includes('![[') // Embedded file
 		)) {
-			console.warn('Transcript appears to be a file reference, not actual text. Cannot generate summary.');
-			return null;
+			console.log('Detected file reference in transcript, attempting to extract text...');
+			
+			try {
+				// Extract filename from various formats:
+				// ![[filename.docx]]
+				// [[filename.docx]]
+				// filename.docx
+				let filename = transcriptContent;
+				
+				// Remove wiki link syntax if present
+				filename = filename.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim();
+				
+				console.log('Extracted filename:', filename);
+				
+				// Try common locations
+				const possiblePaths = [
+					filename,
+					`Media/${filename}`,
+					`Attachments/${filename}`,
+					`Files/${filename}`
+				];
+				
+				let docFile: TFile | null = null;
+				for (const path of possiblePaths) {
+					const file = this.app.vault.getAbstractFileByPath(path);
+					if (file instanceof TFile) {
+						docFile = file;
+						console.log('Found file at:', path);
+						break;
+					}
+				}
+				
+				if (!docFile) {
+					console.warn('Could not find file:', filename);
+					return null;
+				}
+				
+				// Only support .docx (not old .doc format)
+				if (!filename.toLowerCase().endsWith('.docx')) {
+					console.warn('Only .docx files are supported, found:', filename);
+					return null;
+				}
+				
+				// Read the file as binary
+				const arrayBuffer = await this.app.vault.readBinary(docFile);
+				
+				// Convert ArrayBuffer to Buffer for mammoth
+				const buffer = Buffer.from(arrayBuffer);
+				
+				// Extract text using mammoth
+				const result = await mammoth.extractRawText({ buffer });
+				transcriptContent = result.value;
+				
+				console.log('Extracted text from Word doc, length:', transcriptContent.length);
+				console.log('Extracted text preview:', transcriptContent.substring(0, 200));
+				
+				if (!transcriptContent || transcriptContent.length < 20) {
+					console.warn('Extracted text is too short or empty');
+					return null;
+				}
+			} catch (error) {
+				console.error('Error extracting text from Word doc:', error);
+				return null;
+			}
 		}
 
 		try {
