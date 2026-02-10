@@ -200,7 +200,7 @@ export class GeneralMeetingHandler {
 		// Look for speaker patterns in transcript: [Speaker Name] or **Speaker Name:**
 		const speakers = new Set<string>();
 		const jiraKeyPattern = /^[A-Z]+-\d+$/; // Match JIRA keys like GLCP-12345
-		const speakerNumberPattern = /^Speaker \d+$/; // Match "Speaker 1", "Speaker 2", etc.
+		const speakerNumberPattern = /^Speaker \d+$/i; // Match "Speaker 1", "Speaker 2", etc. (case insensitive)
 		
 		// Pattern 1: [Speaker Name] format (but not image references or JIRA keys)
 		const bracketPattern = /\[([^\]]+)\]/g;
@@ -208,13 +208,14 @@ export class GeneralMeetingHandler {
 		
 		while ((match = bracketPattern.exec(content)) !== null) {
 			const speaker = match[1].trim();
-			// Skip image references, JIRA keys, and other non-names
+			// Skip image references, JIRA keys, generic speakers, and other non-names
 			if (!speaker.includes('.png') &&          // Skip image filenames
 			    !speaker.includes('.jpg') &&          // Skip image filenames
 			    speaker.length > 3 &&                 // Reasonable name length
 			    speaker.length < 50 &&                // Not too long
 			    /[a-zA-Z]/.test(speaker) &&           // Contains letters
 			    !jiraKeyPattern.test(speaker) &&      // Not a JIRA key
+			    !speakerNumberPattern.test(speaker) && // Not "Speaker 1", etc.
 			    speaker !== 'Learn more') {           // Not "Learn more" link
 				speakers.add(speaker);
 			}
@@ -232,15 +233,30 @@ export class GeneralMeetingHandler {
 			}
 		}
 		
-		console.log(`Found ${speakers.size} potential speakers in content:`, Array.from(speakers));
+		// Deduplicate: Remove plain names if wiki-link format exists
+		// e.g., keep "[Tronkowski, Kevin|Kevin Tronkowski" and remove "Kevin Tronkowski"
+		const speakersArray = Array.from(speakers);
+		const filtered = speakersArray.filter(name => {
+			// If this is a plain name, check if a wiki-link version exists
+			if (!name.includes('|')) {
+				// Check if any other entry contains this name in wiki-link format
+				const hasWikiVersion = speakersArray.some(other => 
+					other.includes('|') && other.includes(name)
+				);
+				return !hasWikiVersion; // Keep only if no wiki version exists
+			}
+			return true; // Always keep wiki-link format
+		});
+		
+		console.log(`Found ${filtered.length} unique attendees (after deduplication):`, filtered);
 		
 		// If we only found generic speakers, warn the user
-		const allGeneric = Array.from(speakers).every(s => /^Speaker \d+$/i.test(s));
-		if (allGeneric && speakers.size > 0) {
+		const allGeneric = filtered.every(s => speakerNumberPattern.test(s));
+		if (allGeneric && filtered.length > 0) {
 			console.warn('Only generic speaker labels found (Speaker 1, Speaker 2, etc.). Vision API would provide real names from screenshots.');
 		}
 		
-		return Array.from(speakers);
+		return filtered;
 	}
 
 	/**
