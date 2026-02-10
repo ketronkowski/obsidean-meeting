@@ -6,6 +6,8 @@ import { TranscriptDetector } from '../transcript';
 import { PeopleManager } from '../people-manager';
 import { StatusBarManager } from '../ui/status-bar';
 import * as mammoth from 'mammoth';
+import { readFile } from 'fs/promises';
+import { homedir } from 'os';
 
 /**
  * Handles processing of general (non-standup) meetings
@@ -542,6 +544,8 @@ ${contentToSummarize}`;
 				// ![[filename.docx]]
 				// [[filename.docx]]
 				// filename.docx
+				// /absolute/path/file.docx
+				// ~/Documents/file.docx
 				let filename = transcriptContent;
 				
 				// Remove wiki link syntax if present
@@ -549,40 +553,73 @@ ${contentToSummarize}`;
 				
 				console.log('Extracted filename:', filename);
 				
-				// Try common locations
-				const possiblePaths = [
-					filename,
-					`Media/${filename}`,
-					`Attachments/${filename}`,
-					`Files/${filename}`
-				];
+				// Check if it's an absolute or home path (external file)
+				const isAbsolutePath = filename.startsWith('/');
+				const isHomePath = filename.startsWith('~');
 				
-				let docFile: TFile | null = null;
-				for (const path of possiblePaths) {
-					const file = this.app.vault.getAbstractFileByPath(path);
-					if (file instanceof TFile) {
-						docFile = file;
-						console.log('Found file at:', path);
-						break;
+				let buffer: Buffer;
+				
+				if (isAbsolutePath || isHomePath) {
+					// External file - use Node.js fs
+					console.log('Detected external file path');
+					
+					// Expand ~ to home directory
+					let fullPath = filename;
+					if (isHomePath) {
+						fullPath = filename.replace(/^~/, homedir());
 					}
+					
+					console.log('Reading external file:', fullPath);
+					
+					// Only support .docx (not old .doc format)
+					if (!fullPath.toLowerCase().endsWith('.docx')) {
+						console.warn('Only .docx files are supported, found:', fullPath);
+						return null;
+					}
+					
+					// Read file from filesystem
+					buffer = await readFile(fullPath);
+					console.log('Read external file, size:', buffer.length);
+					
+				} else {
+					// Vault file - use Obsidian API
+					console.log('Detected vault file path');
+					
+					// Try common locations
+					const possiblePaths = [
+						filename,
+						`Media/${filename}`,
+						`Attachments/${filename}`,
+						`Files/${filename}`
+					];
+					
+					let docFile: TFile | null = null;
+					for (const path of possiblePaths) {
+						const file = this.app.vault.getAbstractFileByPath(path);
+						if (file instanceof TFile) {
+							docFile = file;
+							console.log('Found file in vault at:', path);
+							break;
+						}
+					}
+					
+					if (!docFile) {
+						console.warn('Could not find file in vault:', filename);
+						return null;
+					}
+					
+					// Only support .docx (not old .doc format)
+					if (!filename.toLowerCase().endsWith('.docx')) {
+						console.warn('Only .docx files are supported, found:', filename);
+						return null;
+					}
+					
+					// Read the file as binary
+					const arrayBuffer = await this.app.vault.readBinary(docFile);
+					
+					// Convert ArrayBuffer to Buffer for mammoth
+					buffer = Buffer.from(arrayBuffer);
 				}
-				
-				if (!docFile) {
-					console.warn('Could not find file:', filename);
-					return null;
-				}
-				
-				// Only support .docx (not old .doc format)
-				if (!filename.toLowerCase().endsWith('.docx')) {
-					console.warn('Only .docx files are supported, found:', filename);
-					return null;
-				}
-				
-				// Read the file as binary
-				const arrayBuffer = await this.app.vault.readBinary(docFile);
-				
-				// Convert ArrayBuffer to Buffer for mammoth
-				const buffer = Buffer.from(arrayBuffer);
 				
 				// Extract text using mammoth
 				const result = await mammoth.extractRawText({ buffer });
