@@ -227,9 +227,9 @@ Return ONLY a valid JSON array of issues with no explanation, markdown formattin
 	 * Send a prompt and wait for complete response
 	 */
 	async sendPrompt(prompt: string, context?: any): Promise<string> {
-		if (!this.activeSession) {
-			await this.createSession();
-		}
+		// Create new session for each request to avoid stale sessions
+		// Sessions can expire after periods of inactivity
+		await this.createSession();
 
 		return new Promise((resolve, reject) => {
 			let responseContent = '';
@@ -295,9 +295,13 @@ Return ONLY a valid JSON array of issues with no explanation, markdown formattin
 					hasResolved = true;
 					
 					// Clean up listeners
-					this.activeSession!.off('assistant.message', messageHandler);
-					this.activeSession!.off('session.idle', idleHandler);
-					this.activeSession!.off('error', errorHandler);
+					try {
+						this.activeSession!.off('assistant.message', messageHandler);
+						this.activeSession!.off('session.idle', idleHandler);
+						this.activeSession!.off('error', errorHandler);
+					} catch (e) {
+						console.error('Error removing listeners:', e);
+					}
 					
 					reject(new Error(`Session error: ${error.message || error}`));
 				}
@@ -313,7 +317,21 @@ Return ONLY a valid JSON array of issues with no explanation, markdown formattin
 			console.log('Sending prompt to session...');
 			this.activeSession!.send({ prompt, context }).catch((err: any) => {
 				console.error('Error sending prompt:', err);
-				reject(err);
+				if (!hasResolved) {
+					clearTimeout(timeout);
+					hasResolved = true;
+					
+					// Clean up listeners
+					try {
+						this.activeSession!.off('assistant.message', messageHandler);
+						this.activeSession!.off('session.idle', idleHandler);
+						this.activeSession!.off('error', errorHandler);
+					} catch (e) {
+						console.error('Error removing listeners:', e);
+					}
+					
+					reject(err);
+				}
 			});
 		});
 	}

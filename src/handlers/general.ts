@@ -537,13 +537,19 @@ ${transcriptContent}`;
 		// Extract Copilot Summary (everything until next # heading)
 		const copilotMatch = content.match(/# Copilot Summary\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (!copilotMatch || !copilotMatch[1].trim()) {
-			console.warn('No Copilot Summary found');
-			return null;
+			console.warn('No Copilot Summary content found');
+			return transcriptSummary; // Use transcript only
 		}
 
 		let copilotSummary = copilotMatch[1].trim();
 		console.log('Copilot Summary raw length:', copilotSummary.length);
 		console.log('Copilot Summary preview:', copilotSummary.substring(0, 200));
+
+		// Check if we accidentally captured the next heading (empty section)
+		if (copilotSummary.startsWith('#')) {
+			console.log('Copilot Summary section is empty (captured next heading), using transcript summary only');
+			return transcriptSummary;
+		}
 
 		// Strip disclaimer text if present (Teams adds this sometimes)
 		const disclaimerPatterns = [
