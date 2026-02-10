@@ -550,6 +550,19 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 		}
 
 		const transcriptContent = transcriptMatch[1].trim();
+		console.log('Transcript content length:', transcriptContent.length);
+		console.log('Transcript preview:', transcriptContent.substring(0, 200));
+
+		// Check if transcript is just a file reference (Word doc, etc.)
+		if (transcriptContent.length < 100 && (
+			transcriptContent.includes('.docx') ||
+			transcriptContent.includes('.doc') ||
+			transcriptContent.includes('.pdf') ||
+			transcriptContent.includes('![[') // Embedded file
+		)) {
+			console.warn('Transcript appears to be a file reference, not actual text. Cannot generate summary.');
+			return null;
+		}
 
 		try {
 			const prompt = `You are analyzing a standup meeting transcript. Generate a concise summary focused on:

@@ -201,6 +201,7 @@ export class GeneralMeetingHandler {
 		const speakers = new Set<string>();
 		const jiraKeyPattern = /^[A-Z]+-\d+$/; // Match JIRA keys like GLCP-12345
 		const speakerNumberPattern = /^Speaker \d+$/i; // Match "Speaker 1", "Speaker 2", etc. (case insensitive)
+		const fileExtPattern = /\.(docx?|pdf|xlsx?|pptx?|txt|md)$/i; // Match file extensions
 		
 		// Pattern 1: [Speaker Name] format (but not image references or JIRA keys)
 		const bracketPattern = /\[([^\]]+)\]/g;
@@ -208,9 +209,11 @@ export class GeneralMeetingHandler {
 		
 		while ((match = bracketPattern.exec(content)) !== null) {
 			const speaker = match[1].trim();
-			// Skip image references, JIRA keys, generic speakers, and other non-names
+			// Skip image references, JIRA keys, generic speakers, files, and other non-names
 			if (!speaker.includes('.png') &&          // Skip image filenames
 			    !speaker.includes('.jpg') &&          // Skip image filenames
+			    !fileExtPattern.test(speaker) &&      // Skip Word docs, PDFs, etc.
+			    !speaker.includes('/') &&             // Skip paths like "People/Name"
 			    speaker.length > 3 &&                 // Reasonable name length
 			    speaker.length < 50 &&                // Not too long
 			    /[a-zA-Z]/.test(speaker) &&           // Contains letters
@@ -522,6 +525,19 @@ ${contentToSummarize}`;
 		}
 
 		const transcriptContent = transcriptMatch[1].trim();
+		console.log('Transcript content length:', transcriptContent.length);
+		console.log('Transcript preview:', transcriptContent.substring(0, 200));
+
+		// Check if transcript is just a file reference (Word doc, etc.)
+		if (transcriptContent.length < 100 && (
+			transcriptContent.includes('.docx') ||
+			transcriptContent.includes('.doc') ||
+			transcriptContent.includes('.pdf') ||
+			transcriptContent.includes('![[') // Embedded file
+		)) {
+			console.warn('Transcript appears to be a file reference, not actual text. Cannot generate summary.');
+			return null;
+		}
 
 		try {
 			const prompt = `You are analyzing a general meeting transcript. Generate a comprehensive summary with:
