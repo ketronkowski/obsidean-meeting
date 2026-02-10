@@ -560,12 +560,19 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 
 Format as clear bullet points organized by team member when possible.
 
+CRITICAL: Do NOT include any markdown headings (# or ##) in your response. Start directly with the content.
+
 Transcript:
 
 ${transcriptContent}`;
 
 			const summary = await this.copilotClient.sendPrompt(prompt);
-			return summary.trim();
+			
+			// Strip any headings the AI might have added anyway
+			let cleaned = summary.trim();
+			cleaned = cleaned.replace(/^#+\s+.*?\n+/gm, ''); // Remove all markdown headings
+			
+			return cleaned.trim();
 		} catch (error) {
 			console.error('Error generating transcript summary:', error);
 			return null;
@@ -631,10 +638,17 @@ Create a single, cohesive summary that:
 - Uses clear, organized bullet points
 - Prioritizes accuracy and completeness
 
+CRITICAL: Do NOT include any markdown headings (# or ##) in your response. Start directly with the content.
+
 Generate the unified summary:`;
 
 			const unified = await this.copilotClient.sendPrompt(prompt);
-			return unified.trim();
+			
+			// Strip any headings the AI might have added anyway
+			let cleaned = unified.trim();
+			cleaned = cleaned.replace(/^#+\s+.*?\n+/gm, ''); // Remove all markdown headings
+			
+			return cleaned.trim();
 		} catch (error) {
 			console.error('Error combining summaries:', error);
 			return null;
