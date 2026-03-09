@@ -56,17 +56,21 @@ export class GeneralMeetingHandler {
 			this.statusBar.show('Extracting attendees...', 0);
 			await this.processAttendees(file, content);
 
-			// 2. Resolve speaker labels ([Speaker N] → real attendee names)
+			// 2. Always expand any ![[...]] embed in # Transcript to inline text
+			this.statusBar.show('Expanding transcript...', 0);
+			await this.expandTranscriptEmbed(file);
+
+			// 3. Resolve speaker labels ([Speaker N] → real attendee names)
 			this.statusBar.show('Identifying speakers...', 0);
 			await this.resolveSpeakers(file);
 
-			// 3. Clean transcript (if enabled, no Copilot Summary, and setting enabled)
+			// 4. Clean transcript (if enabled, no Copilot Summary, and setting enabled)
 			if (!hasCopilotSummary && this.settings.autoCleanTranscript) {
 				this.statusBar.show('Cleaning transcript...', 0);
 				await this.cleanTranscript(file);
 			}
 
-			// 4. Generate summary
+			// 5. Generate summary
 			this.statusBar.show('Generating summary...', 0);
 			await this.generateSummary(file);
 
@@ -87,6 +91,48 @@ export class GeneralMeetingHandler {
 		
 		const summaryContent = summaryMatch[1].trim();
 		return summaryContent.length > 0;
+	}
+
+	/**
+	 * Expand any ![[file.txt]] embed in the # Transcript section to inline text.
+	 * Runs unconditionally so the transcript is always readable in the note.
+	 */
+	private async expandTranscriptEmbed(file: TFile): Promise<void> {
+		const content = await this.app.vault.read(file);
+		const rawTranscript = extractTranscriptText(content);
+
+		if (!rawTranscript) {
+			console.log('[expandTranscriptEmbed] No transcript section found');
+			return;
+		}
+
+		const isEmbed = rawTranscript.length < 300 && (
+			rawTranscript.includes('![[') ||
+			rawTranscript.includes('.txt') ||
+			rawTranscript.includes('.docx')
+		);
+
+		if (!isEmbed) {
+			console.log('[expandTranscriptEmbed] Transcript is already inline text, skipping');
+			return;
+		}
+
+		console.log('[expandTranscriptEmbed] Expanding embed:', rawTranscript.trim());
+		const resolved = await this.resolveTranscriptContent(rawTranscript);
+		if (!resolved || resolved.length < 20) {
+			console.warn('[expandTranscriptEmbed] Could not resolve embed content, leaving as-is');
+			return;
+		}
+
+		const updated = content.replace(
+			/# Transcript\s*\n[\s\S]*?(?=\n# [^#]|$)/,
+			`# Transcript\n\n${resolved}\n\n`
+		);
+
+		if (updated !== content) {
+			await this.app.vault.modify(file, updated);
+			console.log(`[expandTranscriptEmbed] Expanded embed to ${resolved.length} chars of inline text`);
+		}
 	}
 
 	/**
@@ -177,7 +223,7 @@ export class GeneralMeetingHandler {
 		if (isEmbed) {
 			// Replace the entire # Transcript section, substituting the embed with inline text
 			updatedContent = content.replace(
-				/# Transcript\s*\n[\s\S]*?(?=\n#|$)/,
+				/# Transcript\s*\n[\s\S]*?(?=\n# [^#]|$)/,
 				`# Transcript\n\n${rewrittenTranscript}\n\n`
 			);
 			console.log('[resolveSpeakers] Expanded embed to inline transcript with speaker names');
@@ -495,7 +541,7 @@ export class GeneralMeetingHandler {
 
 		// Replace transcript section (embed reference is replaced with inline cleaned text)
 		const newContent = content.replace(
-			/# Transcript\s*\n[\s\S]*?(?=\n#|$)/,
+			/# Transcript\s*\n[\s\S]*?(?=\n# [^#]|$)/,
 			`# Transcript\n\n${result.cleaned}\n\n`
 		);
 
@@ -887,11 +933,14 @@ Generate the unified summary:`;
 
 		// Insert or update Transcript Summary (above Transcript)
 		const transcriptSummarySection = `# Transcript Summary\n\n${transcriptSummary}\n\n`;
-		const transcriptSummaryRegex = /# Transcript Summary\s*\n[\s\S]*?(?=\n#|$)/;
+		// NOTE: regex must NOT include leading \n in [\s\S]*? or it will swallow the next heading
+		// when that heading is the last section (no \n# after it). Instead let [\s\S]*? consume
+		// the newline so that (?=\n#) correctly fires before the next top-level heading.
+		const transcriptSummaryRegex = /# Transcript Summary[\s\S]*?(?=\n# [^#]|$)/;
 		
 		if (transcriptSummaryRegex.test(newContent)) {
 			// Update existing
-			newContent = newContent.replace(transcriptSummaryRegex, transcriptSummarySection);
+			newContent = newContent.replace(transcriptSummaryRegex, transcriptSummarySection.trimEnd());
 		} else {
 			// Insert before Transcript
 			const transcriptRegex = /(# Transcript\s*\n)/;
@@ -902,11 +951,11 @@ Generate the unified summary:`;
 
 		// Insert or update Unified Summary (above Copilot Summary)
 		const unifiedSummarySection = `# Unified Summary\n\n${unifiedSummary}\n\n`;
-		const unifiedSummaryRegex = /# Unified Summary\s*\n[\s\S]*?(?=\n#|$)/;
+		const unifiedSummaryRegex = /# Unified Summary[\s\S]*?(?=\n# [^#]|$)/;
 		
 		if (unifiedSummaryRegex.test(newContent)) {
 			// Update existing
-			newContent = newContent.replace(unifiedSummaryRegex, unifiedSummarySection);
+			newContent = newContent.replace(unifiedSummaryRegex, unifiedSummarySection.trimEnd());
 		} else {
 			// Insert before Copilot Summary
 			const copilotSummaryRegex = /(# Copilot Summary\s*\n)/;

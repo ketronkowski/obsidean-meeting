@@ -81,7 +81,8 @@ export function extractSpeakerProfiles(transcriptText: string): SpeakerProfile[]
  * Returns array of { displayName, wikiLink } objects.
  */
 export function extractAttendeeLinks(content: string): Array<{ displayName: string; wikiLink: string }> {
-	const attendeesMatch = content.match(/^# Attendees\n([\s\S]*?)(?=\n#|$)/m);
+	// Stop at the next TOP-LEVEL heading (# followed by space/text, not ##)
+	const attendeesMatch = content.match(/^# Attendees\n([\s\S]*?)(?=\n# [^#]|$)/m);
 	if (!attendeesMatch) {
 		console.log('[extractAttendeeLinks] No Attendees section found');
 		return [];
