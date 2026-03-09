@@ -199,60 +199,95 @@ export class StandupMeetingHandler {
 	}
 
 	private async resolveSpeakers(file: TFile): Promise<void> {
-		console.log('Resolving speaker labels...');
+		console.log('[resolveSpeakers] Starting (standup)...');
 
 		const content = await this.app.vault.read(file);
-		const transcriptText = extractTranscriptText(content);
+		const rawTranscript = extractTranscriptText(content);
+
+		console.log('[resolveSpeakers] Raw transcript section length:', rawTranscript.length, '— preview:', rawTranscript.substring(0, 80));
+
+		if (!rawTranscript) {
+			console.log('[resolveSpeakers] No transcript section found, skipping');
+			return;
+		}
+
+		const transcriptText = await this.resolveTranscriptContent(rawTranscript);
+		if (!transcriptText) {
+			console.warn('[resolveSpeakers] Could not resolve transcript content, skipping');
+			return;
+		}
+
+		console.log('[resolveSpeakers] Resolved transcript length:', transcriptText.length);
 
 		if (!/\[Speaker \d+\]/i.test(transcriptText)) {
-			console.log('No generic Speaker N labels found, skipping speaker resolution');
+			console.log('[resolveSpeakers] No [Speaker N] labels found in transcript, skipping');
 			return;
 		}
 
 		const attendees = extractAttendeeLinks(content);
+		console.log('[resolveSpeakers] Attendees found:', attendees.map(a => a.displayName));
+
 		if (attendees.length === 0) {
-			console.log('No attendees found, skipping speaker resolution');
+			console.log('[resolveSpeakers] No attendees found, skipping');
 			return;
 		}
 
 		const profiles = extractSpeakerProfiles(transcriptText);
+		console.log('[resolveSpeakers] Speaker profiles:', profiles.map(p => `${p.speakerId}(${p.lineCount} lines)`));
+
 		if (profiles.length === 0) {
-			console.log('No speaker profiles extracted, skipping speaker resolution');
+			console.log('[resolveSpeakers] No speaker profiles extracted, skipping');
 			return;
 		}
-
-		console.log(`Found ${profiles.length} speakers and ${attendees.length} attendees`);
 
 		const autoMappings = autoDetectMappings(profiles, attendees);
 		const resolvedIds = new Set(autoMappings.map(m => m.speakerId));
 		const unresolvedProfiles = profiles.filter(p => !resolvedIds.has(p.speakerId));
 
-		console.log(`Auto-detected: ${autoMappings.length}, unresolved: ${unresolvedProfiles.length}`);
+		console.log('[resolveSpeakers] Auto-detected:', autoMappings.map(m => `${m.speakerId} → ${m.attendeeName} (${Math.round(m.confidence * 100)}%)`));
+		console.log('[resolveSpeakers] Unresolved speakers:', unresolvedProfiles.map(p => p.speakerId));
+		console.log('[resolveSpeakers] Opening SpeakerAttributionModal...');
 
-		let finalMappings = autoMappings;
+		const finalMappings = await new Promise<typeof autoMappings>((resolve) => {
+			new SpeakerAttributionModal(
+				this.app,
+				unresolvedProfiles,
+				autoMappings,
+				attendees,
+				resolve
+			).open();
+		});
 
-		if (unresolvedProfiles.length > 0 || autoMappings.length > 0) {
-			const userMappings = await new Promise<typeof autoMappings>((resolve) => {
-				new SpeakerAttributionModal(
-					this.app,
-					unresolvedProfiles,
-					autoMappings,
-					attendees,
-					resolve
-				).open();
-			});
-			finalMappings = userMappings;
-		}
+		console.log('[resolveSpeakers] Modal closed, final mappings:', finalMappings.map(m => `${m.speakerId} → ${m.attendeeName}`));
 
 		if (finalMappings.length === 0) {
-			console.log('No speaker mappings to apply');
+			console.log('[resolveSpeakers] No mappings to apply');
 			return;
 		}
 
-		const updatedContent = rewriteTranscript(content, finalMappings);
+		const isEmbed = rawTranscript.includes('![[') || (rawTranscript.length < 300 && rawTranscript.includes('.txt'));
+		let rewrittenTranscript = transcriptText;
+		for (const mapping of finalMappings) {
+			const pattern = new RegExp(`\\[${mapping.speakerId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`, 'g');
+			rewrittenTranscript = rewrittenTranscript.replace(pattern, `[${mapping.attendeeName}]`);
+		}
+
+		let updatedContent: string;
+		if (isEmbed) {
+			updatedContent = content.replace(
+				/# Transcript\s*\n[\s\S]*?(?=\n#|$)/,
+				`# Transcript\n\n${rewrittenTranscript}\n\n`
+			);
+			console.log('[resolveSpeakers] Expanded embed to inline transcript with speaker names');
+		} else {
+			updatedContent = rewriteTranscript(content, finalMappings);
+		}
+
 		if (updatedContent !== content) {
 			await this.app.vault.modify(file, updatedContent);
-			console.log(`Applied ${finalMappings.length} speaker mappings`);
+			console.log(`[resolveSpeakers] Applied ${finalMappings.length} speaker mappings`);
+		} else {
+			console.log('[resolveSpeakers] No changes made (content unchanged)');
 		}
 	}
 
@@ -441,35 +476,134 @@ export class StandupMeetingHandler {
 	}
 
 	private async cleanTranscript(file: TFile): Promise<void> {
-		console.log('Cleaning standup transcript...');
+		console.log('[cleanTranscript] Cleaning standup transcript...');
 		
 		const content = await this.app.vault.read(file);
 		
-		// Extract transcript section
 		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (!transcriptMatch) {
-			console.log('No transcript section found');
+			console.log('[cleanTranscript] No transcript section found');
 			return;
 		}
 
-		const transcriptContent = transcriptMatch[1].trim();
-		if (!transcriptContent || transcriptContent.length < 10) {
-			console.log('Transcript section is empty or too short');
+		const rawTranscript = transcriptMatch[1].trim();
+		if (!rawTranscript || rawTranscript.length < 10) {
+			console.log('[cleanTranscript] Transcript section is empty or too short');
 			return;
 		}
 
-		// Detect format and clean
-		const result = this.transcriptDetector.detectAndClean(transcriptContent);
-		console.log(`Cleaned transcript using: ${result.cleaner}`);
+		console.log('[cleanTranscript] Raw transcript length:', rawTranscript.length, '— preview:', rawTranscript.substring(0, 80));
 
-		// Replace transcript section
+		const resolvedText = await this.resolveTranscriptContent(rawTranscript);
+		if (!resolvedText) {
+			console.warn('[cleanTranscript] Could not resolve transcript content, skipping clean');
+			return;
+		}
+
+		console.log('[cleanTranscript] Resolved transcript length:', resolvedText.length);
+
+		const result = this.transcriptDetector.detectAndClean(resolvedText);
+		console.log(`[cleanTranscript] Cleaned using: ${result.cleaner}, output length: ${result.cleaned.length}`);
+
+		if (!result.cleaned || result.cleaned.length < 10) {
+			console.warn('[cleanTranscript] Cleaning produced empty/short output — skipping write to preserve original');
+			return;
+		}
+
 		const newContent = content.replace(
 			/# Transcript\s*\n[\s\S]*?(?=\n#|$)/,
 			`# Transcript\n\n${result.cleaned}\n\n`
 		);
 
 		await this.app.vault.modify(file, newContent);
-		console.log('Transcript cleaned and saved');
+		console.log('[cleanTranscript] Transcript cleaned and saved');
+	}
+
+	/**
+	 * Resolve a raw transcript value to actual text.
+	 * If rawTranscript is an embedded file reference (![[filename.txt]]), reads and returns the file text.
+	 * Otherwise returns rawTranscript unchanged.
+	 * Returns null if resolution fails.
+	 */
+	private async resolveTranscriptContent(rawTranscript: string): Promise<string | null> {
+		const isEmbedRef = rawTranscript.length < 300 && (
+			rawTranscript.includes('.docx') ||
+			rawTranscript.includes('.doc') ||
+			rawTranscript.includes('.txt') ||
+			rawTranscript.includes('![[')
+		);
+
+		if (!isEmbedRef) {
+			console.log('[resolveTranscriptContent] Already inline text, length:', rawTranscript.length);
+			return rawTranscript;
+		}
+
+		console.log('[resolveTranscriptContent] Detected embed/file reference:', rawTranscript.substring(0, 80));
+
+		try {
+			let filename = rawTranscript.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim();
+			console.log('[resolveTranscriptContent] Extracted filename:', filename);
+
+			const isTxtFile = filename.toLowerCase().endsWith('.txt');
+			const isDocxFile = filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc');
+
+			if (!isTxtFile && !isDocxFile) {
+				console.warn('[resolveTranscriptContent] Unsupported file type:', filename);
+				return null;
+			}
+
+			const isAbsolutePath = filename.startsWith('/');
+			const isHomePath = filename.startsWith('~');
+
+			if (isAbsolutePath || isHomePath) {
+				const fullPath = isHomePath ? filename.replace(/^~/, homedir()) : filename;
+				console.log('[resolveTranscriptContent] Reading external file:', fullPath);
+
+				if (isTxtFile) {
+					const text = await readFile(fullPath, 'utf-8');
+					console.log('[resolveTranscriptContent] Read external .txt, length:', text.length);
+					return text;
+				} else {
+					const buffer = await readFile(fullPath);
+					const result = await mammoth.extractRawText({ buffer });
+					console.log('[resolveTranscriptContent] Extracted docx text, length:', result.value.length);
+					return result.value;
+				}
+			} else {
+				const possiblePaths = [filename, `Media/${filename}`, `Attachments/${filename}`, `Files/${filename}`];
+				console.log('[resolveTranscriptContent] Searching vault paths:', possiblePaths);
+
+				let docFile: TFile | null = null;
+				for (const path of possiblePaths) {
+					const f = this.app.vault.getAbstractFileByPath(path);
+					if (f instanceof TFile) {
+						docFile = f;
+						console.log('[resolveTranscriptContent] Found vault file at:', path);
+						break;
+					}
+				}
+
+				if (!docFile) {
+					console.warn('[resolveTranscriptContent] File not found in vault:', filename);
+					return null;
+				}
+
+				if (isTxtFile) {
+					const text = await this.app.vault.read(docFile);
+					console.log('[resolveTranscriptContent] Read vault .txt, length:', text.length);
+					return text;
+				} else {
+					const arrayBuffer = await this.app.vault.readBinary(docFile);
+					const buffer = Buffer.from(arrayBuffer);
+					const result = await mammoth.extractRawText({ buffer });
+					console.log('[resolveTranscriptContent] Extracted vault docx text, length:', result.value.length);
+					return result.value;
+				}
+			}
+		} catch (error) {
+			console.error('[resolveTranscriptContent] Error resolving transcript file:', error);
+			return null;
+		}
 	}
 
 	/**

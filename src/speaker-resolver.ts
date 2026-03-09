@@ -1,5 +1,3 @@
-import { App, TFile } from 'obsidian';
-
 /**
  * A single speaker's profile extracted from the transcript
  */
@@ -26,6 +24,8 @@ export interface SpeakerMapping {
  * Works on the raw file content (reads the # Transcript section).
  */
 export function extractSpeakerProfiles(transcriptText: string): SpeakerProfile[] {
+	console.log('[extractSpeakerProfiles] Parsing transcript, length:', transcriptText.length);
+
 	// Match blocks: [Speaker N] followed by content until the next [Speaker ...] or end
 	const blockPattern = /\[Speaker (\d+)\]\r?\n([\s\S]*?)(?=\n\[Speaker \d+\]|$)/g;
 	const profileMap = new Map<string, { lines: string[] }>();
@@ -49,10 +49,14 @@ export function extractSpeakerProfiles(transcriptText: string): SpeakerProfile[]
 		profileMap.get(speakerId)!.lines.push(...lines);
 	}
 
+	console.log('[extractSpeakerProfiles] Found speaker IDs:', Array.from(profileMap.keys()));
+
 	const profiles: SpeakerProfile[] = [];
 	for (const [speakerId, data] of profileMap.entries()) {
 		const substantiveLines = data.lines.filter(l => l.length > 30 && !/^(um|uh|yeah|okay|right|no|yes|sure|oh)\b/i.test(l));
 		const sampleQuotes = substantiveLines.slice(0, 4);
+
+		console.log(`[extractSpeakerProfiles] ${speakerId}: ${data.lines.length} lines, ${substantiveLines.length} substantive, ${sampleQuotes.length} sample quotes`);
 
 		profiles.push({
 			speakerId,
@@ -78,7 +82,10 @@ export function extractSpeakerProfiles(transcriptText: string): SpeakerProfile[]
  */
 export function extractAttendeeLinks(content: string): Array<{ displayName: string; wikiLink: string }> {
 	const attendeesMatch = content.match(/^# Attendees\n([\s\S]*?)(?=\n#|$)/m);
-	if (!attendeesMatch) return [];
+	if (!attendeesMatch) {
+		console.log('[extractAttendeeLinks] No Attendees section found');
+		return [];
+	}
 
 	const attendeesText = attendeesMatch[1];
 	const result: Array<{ displayName: string; wikiLink: string }> = [];
@@ -103,6 +110,7 @@ export function extractAttendeeLinks(content: string): Array<{ displayName: stri
 		}
 	}
 
+	console.log('[extractAttendeeLinks] Extracted attendees:', result.map(a => a.displayName));
 	return result;
 }
 
@@ -114,6 +122,7 @@ export function autoDetectMappings(
 	profiles: SpeakerProfile[],
 	attendees: Array<{ displayName: string; wikiLink: string }>
 ): SpeakerMapping[] {
+	console.log('[autoDetectMappings] Running heuristics for', profiles.length, 'speakers against', attendees.length, 'attendees');
 	const mappings: SpeakerMapping[] = [];
 	const usedAttendees = new Set<string>();
 
@@ -122,12 +131,18 @@ export function autoDetectMappings(
 
 		for (const attendee of attendees) {
 			const confidence = scoreSpeakerAttendee(profile, attendee);
+			console.log(`[autoDetectMappings]   ${profile.speakerId} vs "${attendee.displayName}": confidence=${confidence.toFixed(2)}`);
 			if (!bestMatch || confidence > bestMatch.confidence) {
 				bestMatch = { attendee, confidence };
 			}
 		}
 
+		if (bestMatch) {
+			console.log(`[autoDetectMappings] ${profile.speakerId} best match: "${bestMatch.attendee.displayName}" (${bestMatch.confidence.toFixed(2)})`);
+		}
+
 		if (bestMatch && bestMatch.confidence >= 0.8) {
+			console.log(`[autoDetectMappings] AUTO-MAPPED: ${profile.speakerId} → ${bestMatch.attendee.displayName}`);
 			mappings.push({
 				speakerId: profile.speakerId,
 				attendeeName: bestMatch.attendee.displayName,
@@ -143,6 +158,7 @@ export function autoDetectMappings(
 	const unmappedProfiles = profiles.filter(p => !mappings.some(m => m.speakerId === p.speakerId));
 	const unmappedAttendees = attendees.filter(a => !usedAttendees.has(a.displayName));
 	if (unmappedProfiles.length === 1 && unmappedAttendees.length === 1) {
+		console.log(`[autoDetectMappings] Single-remaining heuristic: ${unmappedProfiles[0].speakerId} → ${unmappedAttendees[0].displayName} (0.6)`);
 		mappings.push({
 			speakerId: unmappedProfiles[0].speakerId,
 			attendeeName: unmappedAttendees[0].displayName,
@@ -152,6 +168,7 @@ export function autoDetectMappings(
 		});
 	}
 
+	console.log('[autoDetectMappings] Result:', mappings.map(m => `${m.speakerId}→${m.attendeeName}(${m.confidence.toFixed(2)})`));
 	return mappings;
 }
 
@@ -213,13 +230,17 @@ function escapeRegex(str: string): string {
 export function rewriteTranscript(content: string, mappings: SpeakerMapping[]): string {
 	if (mappings.length === 0) return content;
 
+	console.log('[rewriteTranscript] Applying', mappings.length, 'mappings');
 	let result = content;
 	for (const mapping of mappings) {
 		// Replace [Speaker N] with the display name (keep as plain text in transcript,
 		// not a wiki-link, since Obsidian doesn't render links inside code-block-style transcript)
 		const escapedId = escapeRegex(mapping.speakerId);
 		const pattern = new RegExp(`\\[${escapedId}\\]`, 'g');
+		const before = result;
 		result = result.replace(pattern, `[${mapping.attendeeName}]`);
+		const changed = result !== before;
+		console.log(`[rewriteTranscript] ${mapping.speakerId} → [${mapping.attendeeName}]: ${changed ? 'replaced' : 'no matches found'}`);
 	}
 	return result;
 }
@@ -229,5 +250,7 @@ export function rewriteTranscript(content: string, mappings: SpeakerMapping[]): 
  */
 export function extractTranscriptText(content: string): string {
 	const match = content.match(/^# Transcript\s*\n([\s\S]*?)(?=\n#|$)/m);
-	return match ? match[1].trim() : '';
+	const result = match ? match[1].trim() : '';
+	console.log('[extractTranscriptText] Extracted length:', result.length, result ? '— preview: ' + result.substring(0, 60) : '(empty)');
+	return result;
 }

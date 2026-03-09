@@ -39,6 +39,7 @@ export class SpeakerAttributionModal extends Modal {
 	}
 
 	onOpen() {
+		console.log('[SpeakerAttributionModal] Opening modal — unresolved:', this.unresolvedProfiles.map(p => p.speakerId), 'auto:', this.autoMappings.map(m => m.speakerId));
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass('speaker-attribution-modal');
@@ -189,12 +190,14 @@ export class SpeakerAttributionModal extends Modal {
 
 		const skipBtn = buttonRow.createEl('button', { text: 'Skip All', cls: 'mod-muted' });
 		skipBtn.addEventListener('click', () => {
+			console.log('[SpeakerAttributionModal] Skip All clicked');
 			this.resolve([]);
 			this.close();
 		});
 
 		const applyBtn = buttonRow.createEl('button', { text: 'Apply Mappings', cls: 'mod-cta' });
 		applyBtn.addEventListener('click', () => {
+			console.log('[SpeakerAttributionModal] Apply Mappings clicked');
 			this.applyAndClose();
 		});
 	}
@@ -232,11 +235,13 @@ export class SpeakerAttributionModal extends Modal {
 			}
 		}
 
+		console.log('[SpeakerAttributionModal] Applying mappings:', result.map(m => `${m.speakerId} → ${m.attendeeName}`));
 		this.resolve(result);
 		this.close();
 	}
 
 	onClose() {
+		console.log('[SpeakerAttributionModal] Modal closed');
 		const { contentEl } = this;
 		contentEl.empty();
 	}
