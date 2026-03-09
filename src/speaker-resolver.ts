@@ -258,7 +258,7 @@ export function rewriteTranscript(content: string, mappings: SpeakerMapping[]): 
  * Extract just the transcript text from full note content (the # Transcript section).
  */
 export function extractTranscriptText(content: string): string {
-	const match = content.match(/^# Transcript\s*\n([\s\S]*?)(?=\n#|$)/m);
+	const match = content.match(/(?:^|\n)# Transcript\s*\n([\s\S]*?)(?=\n# [^#]|$)/);
 	const result = match ? match[1].trim() : '';
 	console.log('[extractTranscriptText] Extracted length:', result.length, result ? '— preview: ' + result.substring(0, 60) : '(empty)');
 	return result;
