@@ -79,7 +79,11 @@ export class StandupMeetingHandler {
 		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n#|$)/);
 		if (transcriptMatch) {
 			const transcriptContent = transcriptMatch[1].trim();
-			if (transcriptContent.length > 50) {
+			// Check for substantial content OR file references (.txt, .docx, wiki links)
+			if (transcriptContent.length > 50 || 
+			    transcriptContent.includes('.txt') ||
+			    transcriptContent.includes('.docx') ||
+			    transcriptContent.includes('![[')) {
 				return 'post-meeting';
 			}
 		}
@@ -560,17 +564,18 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 		if (transcriptContent.length < 200 && (
 			transcriptContent.includes('.docx') ||
 			transcriptContent.includes('.doc') ||
+			transcriptContent.includes('.txt') ||
 			transcriptContent.includes('![[') // Embedded file
 		)) {
 			console.log('Detected file reference in transcript, attempting to extract text...');
 			
 			try {
 				// Extract filename from various formats:
-				// ![[filename.docx]]
-				// [[filename.docx]]
-				// filename.docx
-				// /absolute/path/file.docx
-				// ~/Documents/file.docx
+				// ![[filename.docx]] or ![[filename.txt]]
+				// [[filename.docx]] or [[filename.txt]]
+				// filename.docx or filename.txt
+				// /absolute/path/file.docx or /absolute/path/file.txt
+				// ~/Documents/file.docx or ~/Documents/file.txt
 				let filename = transcriptContent;
 				
 				// Remove wiki link syntax if present
@@ -581,8 +586,13 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 				// Check if it's an absolute or home path (external file)
 				const isAbsolutePath = filename.startsWith('/');
 				const isHomePath = filename.startsWith('~');
+				const isTxtFile = filename.toLowerCase().endsWith('.txt');
+				const isDocxFile = filename.toLowerCase().endsWith('.docx');
 				
-				let buffer: Buffer;
+				if (!isTxtFile && !isDocxFile) {
+					console.warn('Only .txt and .docx files are supported, found:', filename);
+					return null;
+				}
 				
 				if (isAbsolutePath || isHomePath) {
 					// External file - use Node.js fs
@@ -596,15 +606,19 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 					
 					console.log('Reading external file:', fullPath);
 					
-					// Only support .docx (not old .doc format)
-					if (!fullPath.toLowerCase().endsWith('.docx')) {
-						console.warn('Only .docx files are supported, found:', fullPath);
-						return null;
+					if (isTxtFile) {
+						// Read .txt file as text
+						transcriptContent = await readFile(fullPath, 'utf-8');
+						console.log('Read external .txt file, length:', transcriptContent.length);
+					} else {
+						// Read .docx file as binary
+						const buffer = await readFile(fullPath);
+						console.log('Read external .docx file, size:', buffer.length);
+						
+						// Extract text using mammoth
+						const result = await mammoth.extractRawText({ buffer });
+						transcriptContent = result.value;
 					}
-					
-					// Read file from filesystem
-					buffer = await readFile(fullPath);
-					console.log('Read external file, size:', buffer.length);
 					
 				} else {
 					// Vault file - use Obsidian API
@@ -633,24 +647,22 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 						return null;
 					}
 					
-					// Only support .docx (not old .doc format)
-					if (!filename.toLowerCase().endsWith('.docx')) {
-						console.warn('Only .docx files are supported, found:', filename);
-						return null;
+					if (isTxtFile) {
+						// Read .txt file as text
+						transcriptContent = await this.app.vault.read(docFile);
+						console.log('Read vault .txt file, length:', transcriptContent.length);
+					} else {
+						// Read .docx file as binary
+						const arrayBuffer = await this.app.vault.readBinary(docFile);
+						const buffer = Buffer.from(arrayBuffer);
+						
+						// Extract text using mammoth
+						const result = await mammoth.extractRawText({ buffer });
+						transcriptContent = result.value;
 					}
-					
-					// Read the file as binary
-					const arrayBuffer = await this.app.vault.readBinary(docFile);
-					
-					// Convert ArrayBuffer to Buffer for mammoth
-					buffer = Buffer.from(arrayBuffer);
 				}
 				
-				// Extract text using mammoth
-				const result = await mammoth.extractRawText({ buffer });
-				transcriptContent = result.value;
-				
-				console.log('Extracted text from Word doc, length:', transcriptContent.length);
+				console.log('Extracted transcript text, length:', transcriptContent.length);
 				console.log('Extracted text preview:', transcriptContent.substring(0, 200));
 				
 				if (!transcriptContent || transcriptContent.length < 20) {
@@ -827,7 +839,7 @@ Generate the unified summary:`;
 				return;
 			}
 			
-			// Extract JIRA keys
+			// Extract JIRA keys with context
 			const matches = this.jiraExtractor.extractKeys(relevantContent);
 			
 			if (matches.length === 0) {
@@ -839,12 +851,12 @@ Generate the unified summary:`;
 			const mentionedKeys = matches.map(m => m.key);
 			console.log(`Found ${mentionedKeys.length} JIRA keys:`, mentionedKeys);
 			
-			// Update checkboxes in JIRA section
-			const updatedContent = this.jiraExtractor.updateJiraSection(content, mentionedKeys);
+			// Update checkboxes and add notes in JIRA section
+			const updatedContent = this.jiraExtractor.updateJiraSection(content, mentionedKeys, matches);
 			
 			if (updatedContent !== content) {
 				await this.app.vault.modify(file, updatedContent);
-				console.log('JIRA section updated with checked items');
+				console.log('JIRA section updated with checked items and notes');
 			} else {
 				console.log('No JIRA items were checked (keys may not match items in JIRA section)');
 			}

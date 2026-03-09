@@ -1,4 +1,4 @@
-import { CopilotClient } from '@github/copilot-sdk';
+import { CopilotClient, approveAll } from '@github/copilot-sdk';
 import { MeetingProcessorSettings } from './ui/settings-tab';
 
 /**
@@ -69,14 +69,15 @@ export class CopilotClientManager {
 		// Close previous session if exists
 		if (this.activeSession) {
 			try {
-				await this.activeSession.destroy();
+				await this.activeSession.disconnect();
 			} catch (error) {
 				console.warn('Error closing previous session:', error);
 			}
 		}
 
 		this.activeSession = await this.client!.createSession({
-			model: this.settings.model
+			model: this.settings.model,
+			onPermissionRequest: approveAll
 		});
 
 		return this.activeSession;
@@ -201,139 +202,32 @@ Return ONLY a valid JSON array of issues with no explanation, markdown formattin
 			await this.createSession();
 		}
 
-		// Try different context formats to see what works
-		let context: any;
-		
 		if (isFilePath) {
-			// Try passing file path directly
 			console.log('Attempting vision with file path:', imagePathOrBase64);
-			context = {
-				files: [{ path: imagePathOrBase64, type: 'image' }]
-			};
-		} else {
-			// Try base64 format
-			context = {
-				images: [{
-					data: imagePathOrBase64,
-					mimeType: 'image/png'
-				}]
-			};
+			return this.sendPrompt(prompt, [{ type: 'file' as const, path: imagePathOrBase64 }]);
 		}
 
-		return this.sendPrompt(prompt, context);
+		// Base64 images are not supported as attachments - fall back to CLI
+		return this.sendPrompt(prompt);
 	}
 
 	/**
 	 * Send a prompt and wait for complete response
 	 */
-	async sendPrompt(prompt: string, context?: any): Promise<string> {
+	async sendPrompt(prompt: string, attachments?: Array<{ type: 'file' | 'directory'; path: string }>): Promise<string> {
 		// Create new session for each request to avoid stale sessions
-		// Sessions can expire after periods of inactivity
 		await this.createSession();
 
-		return new Promise((resolve, reject) => {
-			let responseContent = '';
-			let hasResolved = false;
-			
-			// Set a timeout in case events don't fire
-			const timeout = setTimeout(() => {
-				if (!hasResolved) {
-					console.warn('Copilot response timeout, returning partial content:', responseContent.length, 'chars');
-					hasResolved = true;
-					resolve(responseContent);
-				}
-			}, 60000); // 60 second timeout
-			
-			// Collect response chunks
-			const messageHandler = (event: any) => {
-				console.log('Received assistant.message event');
-				if (event.data?.content) {
-					console.log('Content chunk:', event.data.content.substring(0, 100));
-					responseContent += event.data.content;
-				}
-			};
+		const options: any = { prompt };
+		if (attachments?.length) {
+			options.attachments = attachments;
+		}
 
-			// Wait for session to become idle
-			const idleHandler = () => {
-				console.log('Session idle event fired');
-				console.log('  hasResolved =', hasResolved);
-				console.log('  responseContent.length =', responseContent.length);
-				
-				if (!hasResolved) {
-					console.log('  Setting hasResolved = true');
-					clearTimeout(timeout);
-					hasResolved = true;
-					
-					// Clean up listeners
-					try {
-						console.log('  Removing event listeners...');
-						this.activeSession!.off('assistant.message', messageHandler);
-						this.activeSession!.off('session.idle', idleHandler);
-						this.activeSession!.off('error', errorHandler);
-						console.log('  Event listeners removed');
-					} catch (error) {
-						console.error('  Error removing listeners:', error);
-					}
-					
-					console.log('  About to resolve with:', responseContent.substring(0, 100));
-					try {
-						resolve(responseContent);
-						console.log('  Promise.resolve() called successfully');
-					} catch (error) {
-						console.error('  Error in resolve():', error);
-					}
-				} else {
-					console.log('  Skipping resolve because hasResolved is already true');
-				}
-			};
-
-			// Handle errors
-			const errorHandler = (error: any) => {
-				console.error('Session error event:', error);
-				if (!hasResolved) {
-					clearTimeout(timeout);
-					hasResolved = true;
-					
-					// Clean up listeners
-					try {
-						this.activeSession!.off('assistant.message', messageHandler);
-						this.activeSession!.off('session.idle', idleHandler);
-						this.activeSession!.off('error', errorHandler);
-					} catch (e) {
-						console.error('Error removing listeners:', e);
-					}
-					
-					reject(new Error(`Session error: ${error.message || error}`));
-				}
-			};
-
-			// Register event handlers BEFORE sending
-			console.log('Registering event handlers...');
-			this.activeSession!.on('assistant.message', messageHandler);
-			this.activeSession!.on('session.idle', idleHandler);
-			this.activeSession!.on('error', errorHandler);
-
-			// Send the prompt
-			console.log('Sending prompt to session...');
-			this.activeSession!.send({ prompt, context }).catch((err: any) => {
-				console.error('Error sending prompt:', err);
-				if (!hasResolved) {
-					clearTimeout(timeout);
-					hasResolved = true;
-					
-					// Clean up listeners
-					try {
-						this.activeSession!.off('assistant.message', messageHandler);
-						this.activeSession!.off('session.idle', idleHandler);
-						this.activeSession!.off('error', errorHandler);
-					} catch (e) {
-						console.error('Error removing listeners:', e);
-					}
-					
-					reject(err);
-				}
-			});
-		});
+		console.log('Sending prompt to session...');
+		const response = await this.activeSession!.sendAndWait(options, 60000);
+		const content = response?.data?.content ?? '';
+		console.log('Response received, length:', content.length);
+		return content;
 	}
 
 	/**
@@ -342,9 +236,9 @@ Return ONLY a valid JSON array of issues with no explanation, markdown formattin
 	async stop(): Promise<void> {
 		if (this.activeSession) {
 			try {
-				await this.activeSession.destroy();
+				await this.activeSession.disconnect();
 			} catch (error) {
-				console.warn('Error destroying session:', error);
+				console.warn('Error disconnecting session:', error);
 			}
 			this.activeSession = null;
 		}

@@ -36,9 +36,9 @@ export class JiraKeyExtractor {
 	}
 
 	/**
-	 * Update JIRA section by checking boxes for mentioned keys
+	 * Update JIRA section by checking boxes and adding notes for mentioned keys
 	 */
-	updateJiraSection(content: string, mentionedKeys: string[]): string {
+	updateJiraSection(content: string, mentionedKeys: string[], matches?: JiraKeyMatch[]): string {
 		if (mentionedKeys.length === 0) {
 			return content;
 		}
@@ -48,19 +48,83 @@ export class JiraKeyExtractor {
 		let newContent = content;
 		const mentionedSet = new Set(mentionedKeys.map(k => k.toUpperCase()));
 		
+		// Build a map of key -> contexts if matches provided
+		const contextMap = new Map<string, string[]>();
+		if (matches) {
+			for (const match of matches) {
+				const key = match.key.toUpperCase();
+				if (!contextMap.has(key)) {
+					contextMap.set(key, []);
+				}
+				contextMap.get(key)!.push(match.context);
+			}
+		}
+		
 		// Find and update checkboxes in JIRA section
 		// Pattern: - [ ] {icon} {statusEmoji} [KEY](url) - summary
-		const jiraItemPattern = /^(\s*- \[)([ x])(\] [^\[]*\[)([A-Z]+-\d+)(\]\([^\)]+\)[^\n]*)/gm;
+		const jiraItemPattern = /^(\s*- \[)([ x])(\] [^\[]*\[)([A-Z]+-\d+)(\]\([^\)]+\)[^\n]*\n?)(\s*- .*\n)*/gm;
 		
-		newContent = newContent.replace(jiraItemPattern, (match, prefix, checked, middle, key, suffix) => {
-			if (mentionedSet.has(key.toUpperCase()) && checked === ' ') {
-				console.log(`Checking box for ${key}`);
-				return prefix + 'x' + middle + key + suffix;
+		newContent = newContent.replace(jiraItemPattern, (match, prefix, checked, middle, key, suffix, existingNotes) => {
+			const upperKey = key.toUpperCase();
+			
+			if (mentionedSet.has(upperKey)) {
+				let result = match;
+				
+				// Check the box if not already checked
+				if (checked === ' ') {
+					console.log(`Checking box for ${key}`);
+					result = prefix + 'x' + middle + key + suffix;
+				} else {
+					result = prefix + checked + middle + key + suffix;
+				}
+				
+				// Add context notes if available and not already present
+				if (contextMap.has(upperKey)) {
+					const contexts = contextMap.get(upperKey)!;
+					for (const context of contexts) {
+						// Clean up the context
+						const cleanContext = this.cleanContext(context, key);
+						if (cleanContext && cleanContext.length > 10) {
+							const note = `\t- ${cleanContext}\n`;
+							// Only add if not already in existing notes
+							if (!match.includes(cleanContext.substring(0, 30))) {
+								result = result.trimEnd() + '\n' + note;
+								console.log(`Added note to ${key}: ${cleanContext.substring(0, 50)}...`);
+							}
+						}
+					}
+				}
+				
+				return result;
 			}
 			return match;
 		});
 		
 		return newContent;
+	}
+	
+	/**
+	 * Clean context text for use in a note
+	 */
+	private cleanContext(context: string, jiraKey: string): string {
+		// Remove the JIRA key itself
+		let cleaned = context.replace(new RegExp(`\\b${jiraKey}\\b`, 'gi'), '').trim();
+		
+		// Remove markdown links but keep the text
+		cleaned = cleaned.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+		
+		// Remove excessive whitespace
+		cleaned = cleaned.replace(/\s+/g, ' ').trim();
+		
+		// Remove common prefixes
+		cleaned = cleaned.replace(/^[-*•]\s*/, '');
+		
+		// Truncate if too long
+		if (cleaned.length > 150) {
+			cleaned = cleaned.substring(0, 147) + '...';
+		}
+		
+		return cleaned;
 	}
 
 	/**
