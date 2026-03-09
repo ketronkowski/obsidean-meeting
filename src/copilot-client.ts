@@ -25,12 +25,11 @@ export class CopilotClientManager {
 			console.log('Initializing Copilot client...');
 			console.log('CLI path:', this.settings.copilotCliPath);
 			
-			// Use TCP mode (not stdio) which works better in Electron
+			// Use stdio mode - CLI exits immediately when stdin is closed (TCP/ignore mode)
 			this.client = new CopilotClient({
 				cliPath: this.settings.copilotCliPath,
 				autoStart: true,
-				useStdio: false, // Important: stdio doesn't work in Obsidian
-				port: 0, // Use random available port
+				useStdio: true,
 				logLevel: 'warning'
 			});
 			
@@ -198,36 +197,64 @@ Return ONLY a valid JSON array of issues with no explanation, markdown formattin
 	 * Send a prompt with an image file for vision analysis
 	 */
 	async sendVisionPrompt(prompt: string, imagePathOrBase64: string, isFilePath: boolean = false): Promise<string> {
-		if (!this.activeSession) {
-			await this.createSession();
-		}
-
 		if (isFilePath) {
 			console.log('Attempting vision with file path:', imagePathOrBase64);
-			return this.sendPrompt(prompt, [{ type: 'file' as const, path: imagePathOrBase64 }]);
+			return this.analyzeImageWithCLI(imagePathOrBase64, prompt);
 		}
 
-		// Base64 images are not supported as attachments - fall back to CLI
+		// Base64 images are not supported - fall back to text-only prompt
 		return this.sendPrompt(prompt);
 	}
 
 	/**
-	 * Send a prompt and wait for complete response
+	 * Send a prompt and wait for complete response.
+	 * Uses the CLI directly via -p flag to avoid SDK stdio/JSON-RPC startup issues.
 	 */
 	async sendPrompt(prompt: string, attachments?: Array<{ type: 'file' | 'directory'; path: string }>): Promise<string> {
-		// Create new session for each request to avoid stale sessions
-		await this.createSession();
+		const { spawn } = require('child_process');
 
-		const options: any = { prompt };
-		if (attachments?.length) {
-			options.attachments = attachments;
-		}
+		return new Promise((resolve, reject) => {
+			const cliPath = this.settings.copilotCliPath || 'copilot';
 
-		console.log('Sending prompt to session...');
-		const response = await this.activeSession!.sendAndWait(options, 60000);
-		const content = response?.data?.content ?? '';
-		console.log('Response received, length:', content.length);
-		return content;
+			console.log('Sending prompt via CLI:', cliPath);
+
+			// Build final prompt - append any file references for the CLI to load
+			let fullPrompt = prompt;
+			if (attachments?.length) {
+				const refs = attachments.map(a => `[📄 ${a.path}]`).join('\n');
+				fullPrompt = `${prompt}\n\n${refs}`;
+			}
+
+			const proc = spawn(cliPath, ['-p', fullPrompt], {
+				stdio: ['pipe', 'pipe', 'pipe']
+			});
+
+			let stdout = '';
+			let stderr = '';
+
+			proc.stdout.on('data', (data: Buffer) => {
+				stdout += data.toString();
+			});
+
+			proc.stderr.on('data', (data: Buffer) => {
+				stderr += data.toString();
+			});
+
+			proc.on('close', (code: number) => {
+				if (code !== 0) {
+					console.error('CLI error:', stderr);
+					reject(new Error(`CLI exited with code ${code}: ${stderr}`));
+				} else {
+					console.log('Prompt response received, length:', stdout.trim().length);
+					resolve(stdout.trim());
+				}
+			});
+
+			proc.on('error', (error: Error) => {
+				console.error('Failed to spawn CLI:', error);
+				reject(error);
+			});
+		});
 	}
 
 	/**

@@ -83,12 +83,16 @@ export class GeneralMeetingHandler {
 	private async processAttendees(file: TFile, content: string): Promise<void> {
 		console.log('Processing attendees...');
 		
-		// Check for screenshot references
+		// Only search for screenshots within the Attendees section
+		const attendeesSectionMatch = content.match(/^# Attendees\n([\s\S]*?)(?=^# |\Z)/m);
+		const attendeesContent = attendeesSectionMatch ? attendeesSectionMatch[1] : '';
+
+		// Check for screenshot references in Attendees section only
 		const screenshotPattern = /!\[\[(SCR-[^\]]+\.png)\]\]/g;
 		const screenshots: string[] = [];
 		let match;
 		
-		while ((match = screenshotPattern.exec(content)) !== null) {
+		while ((match = screenshotPattern.exec(attendeesContent)) !== null) {
 			screenshots.push(match[1]);
 		}
 
@@ -172,8 +176,11 @@ export class GeneralMeetingHandler {
 				if (namesList && namesList !== 'NO_NAMES_FOUND') {
 					const names = namesList.split(',').map(n => n.trim()).filter(n => 
 						n.length > 0 && 
-						n.length < 100 &&
-						!/don't|cannot|please/i.test(n)  // Filter out error messages
+						n.length < 60 &&
+						!/don't|cannot|please/i.test(n) &&  // Filter out error messages
+						/^[A-Za-z]/.test(n) &&              // Must start with a letter
+						!/[\/\(\)\+\[\]]/.test(n) &&        // No special chars typical of non-names
+						n.split(' ').length >= 2             // Must have at least first and last name
 					);
 					names.forEach(name => allNames.add(name));
 					console.log(`Extracted ${names.length} names from ${screenshot}:`, names);
