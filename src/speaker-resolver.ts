@@ -81,8 +81,9 @@ export function extractSpeakerProfiles(transcriptText: string): SpeakerProfile[]
  * Returns array of { displayName, wikiLink } objects.
  */
 export function extractAttendeeLinks(content: string): Array<{ displayName: string; wikiLink: string }> {
-	// Stop at the next TOP-LEVEL heading (# followed by space/text, not ##)
-	const attendeesMatch = content.match(/^# Attendees\n([\s\S]*?)(?=\n# [^#]|$)/m);
+	// Use (?:^|\n) instead of ^m so $ means end-of-string (not end-of-line),
+	// ensuring the full section (including sub-headings like ## In Meeting) is captured.
+	const attendeesMatch = content.match(/(?:^|\n)# Attendees\n([\s\S]*?)(?=\n# (?!#)|$)/);
 	if (!attendeesMatch) {
 		console.log('[extractAttendeeLinks] No Attendees section found');
 		return [];
@@ -188,11 +189,18 @@ function scoreSpeakerAttendee(
 
 	let score = 0;
 
-	// Self-introduction patterns
+	// Self-introduction patterns (broad set to catch real-world transcript styles)
 	const introPatterns = [
+		// "I'm Kevin" / "I am Kevin"
 		new RegExp(`\\bI(?:'m| am)\\s+${escapeRegex(firstName)}\\b`, 'i'),
+		// "my name is Kevin" / "my name's Kevin"
 		new RegExp(`\\bmy name(?:'s| is)\\s+${escapeRegex(firstName)}\\b`, 'i'),
+		// Full name appears anywhere (self-identification in 3rd person or name-drop)
 		new RegExp(`\\b${escapeRegex(fullName)}\\b`, 'i'),
+		// "Kevin Tronkowski. I am" (name then self-description)
+		new RegExp(`\\b${escapeRegex(firstName)}\\s+${escapeRegex(lastName)}\\b`, 'i'),
+		// "this is Kevin" / "it's Kevin"
+		new RegExp(`\\b(?:this is|it'?s)\\s+${escapeRegex(firstName)}\\b`, 'i'),
 	];
 	for (const pattern of introPatterns) {
 		if (pattern.test(allText)) {
@@ -201,7 +209,7 @@ function scoreSpeakerAttendee(
 		}
 	}
 
-	// First name mentioned by this speaker in their own speech
+	// First/last name partial matches (weaker signals)
 	if (score === 0) {
 		const firstNamePattern = new RegExp(`\\b${escapeRegex(firstName)}\\b`, 'i');
 		if (firstNamePattern.test(allText)) {
