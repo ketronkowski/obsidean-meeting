@@ -8,6 +8,14 @@ import { StatusBarManager } from '../ui/status-bar';
 import { JiraManager } from '../jira/manager';
 import { PeopleManager } from '../people-manager';
 import { JiraKeyExtractor } from '../jira/extractor';
+import { SpeakerAttributionModal } from '../ui/speaker-attribution-modal';
+import {
+	extractSpeakerProfiles,
+	extractAttendeeLinks,
+	autoDetectMappings,
+	rewriteTranscript,
+	extractTranscriptText
+} from '../speaker-resolver';
 import * as mammoth from 'mammoth';
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
@@ -171,19 +179,81 @@ export class StandupMeetingHandler {
 		this.statusBar.show('Processing attendees...', 0);
 		await this.processAttendees(file, content);
 
-		// 2. Clean transcript (if no Copilot Summary and setting enabled)
+		// 2. Resolve speaker labels ([Speaker N] → real attendee names)
+		this.statusBar.show('Identifying speakers...', 0);
+		await this.resolveSpeakers(file);
+
+		// 3. Clean transcript (if no Copilot Summary and setting enabled)
 		const hasCopilotSummary = this.hasCopilotSummary(content);
 		if (!hasCopilotSummary && this.settings.autoCleanTranscript) {
 			this.statusBar.show('Cleaning transcript...', 0);
 			await this.cleanTranscript(file);
 		}
 
-		// 3. Generate summary
+		// 4. Generate summary
 		this.statusBar.show('Generating summary...', 0);
 		await this.generateSummary(file);
 
 		// 4. Extract JIRA updates mentioned in meeting
 		await this.extractJiraUpdates(file, content);
+	}
+
+	private async resolveSpeakers(file: TFile): Promise<void> {
+		console.log('Resolving speaker labels...');
+
+		const content = await this.app.vault.read(file);
+		const transcriptText = extractTranscriptText(content);
+
+		if (!/\[Speaker \d+\]/i.test(transcriptText)) {
+			console.log('No generic Speaker N labels found, skipping speaker resolution');
+			return;
+		}
+
+		const attendees = extractAttendeeLinks(content);
+		if (attendees.length === 0) {
+			console.log('No attendees found, skipping speaker resolution');
+			return;
+		}
+
+		const profiles = extractSpeakerProfiles(transcriptText);
+		if (profiles.length === 0) {
+			console.log('No speaker profiles extracted, skipping speaker resolution');
+			return;
+		}
+
+		console.log(`Found ${profiles.length} speakers and ${attendees.length} attendees`);
+
+		const autoMappings = autoDetectMappings(profiles, attendees);
+		const resolvedIds = new Set(autoMappings.map(m => m.speakerId));
+		const unresolvedProfiles = profiles.filter(p => !resolvedIds.has(p.speakerId));
+
+		console.log(`Auto-detected: ${autoMappings.length}, unresolved: ${unresolvedProfiles.length}`);
+
+		let finalMappings = autoMappings;
+
+		if (unresolvedProfiles.length > 0 || autoMappings.length > 0) {
+			const userMappings = await new Promise<typeof autoMappings>((resolve) => {
+				new SpeakerAttributionModal(
+					this.app,
+					unresolvedProfiles,
+					autoMappings,
+					attendees,
+					resolve
+				).open();
+			});
+			finalMappings = userMappings;
+		}
+
+		if (finalMappings.length === 0) {
+			console.log('No speaker mappings to apply');
+			return;
+		}
+
+		const updatedContent = rewriteTranscript(content, finalMappings);
+		if (updatedContent !== content) {
+			await this.app.vault.modify(file, updatedContent);
+			console.log(`Applied ${finalMappings.length} speaker mappings`);
+		}
 	}
 
 	private hasCopilotSummary(content: string): boolean {
