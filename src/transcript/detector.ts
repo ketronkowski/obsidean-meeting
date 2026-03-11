@@ -2,6 +2,7 @@ import { TranscriptCleaner } from './types';
 import { TeamsDirectPasteCleaner } from './cleaner-teams';
 import { TeamsDownloadedCleaner } from './cleaner-downloaded';
 import { TeamsDocxCleaner } from './cleaner-docx';
+import { GoogleRecorderCleaner } from './cleaner-google-recorder';
 import { SimpleTranscriptCleaner } from './cleaner-simple';
 
 /**
@@ -17,6 +18,7 @@ export class TranscriptDetector {
 			new TeamsDirectPasteCleaner(),
 			new TeamsDownloadedCleaner(),
 			new TeamsDocxCleaner(),
+			new GoogleRecorderCleaner(),
 			new SimpleTranscriptCleaner()
 		];
 	}

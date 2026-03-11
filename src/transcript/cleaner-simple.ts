@@ -32,6 +32,7 @@ export class SimpleTranscriptCleaner implements TranscriptCleaner {
 		
 		let currentSpeaker = '';
 		let currentContent: string[] = [];
+		let preamble: string[] = []; // content before first speaker is identified
 
 		for (const line of lines) {
 			const trimmed = line.trim();
@@ -54,11 +55,20 @@ export class SimpleTranscriptCleaner implements TranscriptCleaner {
 				}
 
 				currentSpeaker = extracted.speaker;
-				currentContent = extracted.content ? [extracted.content] : [];
+				// Prepend any preamble to the first speaker's content
+				if (preamble.length > 0) {
+					currentContent = [...preamble, ...(extracted.content ? [extracted.content] : [])];
+					preamble = [];
+				} else {
+					currentContent = extracted.content ? [extracted.content] : [];
+				}
 			} else {
 				// This is content for the current speaker
 				if (currentSpeaker) {
 					currentContent.push(trimmed);
+				} else {
+					// Accumulate content before the first speaker is found
+					preamble.push(trimmed);
 				}
 			}
 		}

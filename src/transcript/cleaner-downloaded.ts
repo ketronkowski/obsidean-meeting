@@ -33,6 +33,7 @@ export class TeamsDownloadedCleaner implements TranscriptCleaner {
 		
 		let currentSpeaker = '';
 		let currentContent: string[] = [];
+		let preamble: string[] = []; // content before first speaker is identified
 
 		for (const line of lines) {
 			const trimmed = line.trim();
@@ -53,15 +54,19 @@ export class TeamsDownloadedCleaner implements TranscriptCleaner {
 					});
 				}
 
-				// Start new speaker
+				// Start new speaker, prepending any preamble
 				currentSpeaker = speakerMatch;
-				currentContent = [];
+				currentContent = preamble.length > 0 ? [...preamble] : [];
+				preamble = [];
 				continue;
 			}
 
 			// This is content for the current speaker
 			if (currentSpeaker) {
 				currentContent.push(trimmed);
+			} else {
+				// Accumulate content before the first speaker is found
+				preamble.push(trimmed);
 			}
 		}
 

@@ -30,8 +30,6 @@ Key facts, dates, commitments shared.
 ## Output Format
 
 ```markdown
-# Transcript Summary
-
 **Key Points:**
 - Discussion point 1
 - Discussion point 2
