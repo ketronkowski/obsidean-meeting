@@ -1,5 +1,7 @@
 # Attendee Extraction Skill
 
+> **Legacy design note — not loaded by the plugin.** This skill file is no longer read by `SkillLoader.getSkill()`; the logic it describes has been hard-coded in TypeScript. Kept for historical/design reference only. See `docs/REFERENCE.md` §10.
+
 ## Purpose
 Extract meeting attendees from screenshots or content and create/link People profiles.
 
@@ -38,26 +40,18 @@ When no screenshots available:
 ## People Profile Creation
 
 ### Profile Template
+Real output (`people-manager.ts` `createProfile`/`createProfileWithBody`) is
+frontmatter-only — no body sections:
 ```markdown
 ---
-tags: [person]
+aliases:
+  - [Full Name]
+tags:
+  - People
 ---
-
-# [Full Name]
-
-## Contact
-- Email: 
-- Teams: 
-
-## Role
-- Title: 
-- Team: 
-
-## Notes
-
-## Meetings
-- [[2026-02-05 - Meeting Name]]
 ```
+The email-chain handler (`createProfileWithBody`) may also inject an `email:`
+frontmatter line and a Copilot-generated body below the frontmatter.
 
 ### File Location
 `{peopleFolder}/[Full Name].md`
@@ -66,10 +60,12 @@ Example: `People/John Smith.md`
 
 ## Attendees Section Update
 
-Replace or populate the `## Attendees` section:
+Replace or populate the `# Attendees` section:
 
 ```markdown
-## Attendees
+# Attendees
+
+## In Meeting (3)
 - [[John Smith]]
 - [[Jane Doe]]
 - [[Alice Johnson]]

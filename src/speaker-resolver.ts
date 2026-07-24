@@ -14,9 +14,17 @@ export interface SpeakerProfile {
 export interface SpeakerMapping {
 	speakerId: string;      // e.g. "Speaker 1"
 	attendeeName: string;   // display name e.g. "Paul Lloyd"
-	wikiLink: string;       // [[People/Lloyd, Paul|Paul Lloyd]]
+	wikiLink: string;       // [[Lloyd, Paul|Paul Lloyd]]
 	confidence: number;     // 0–1
 	autoDetected: boolean;
+}
+
+/**
+ * Best-guess match for an unresolved speaker (may be below auto-map threshold)
+ */
+export interface SpeakerBestGuess {
+	attendeeName: string;
+	confidence: number;     // 0–1
 }
 
 /**
@@ -26,8 +34,10 @@ export interface SpeakerMapping {
 export function extractSpeakerProfiles(transcriptText: string): SpeakerProfile[] {
 	console.log('[extractSpeakerProfiles] Parsing transcript, length:', transcriptText.length);
 
-	// Match blocks: [Speaker N] followed by content until the next [Speaker ...] or end
-	const blockPattern = /\[Speaker (\d+)\]\r?\n([\s\S]*?)(?=\n\[Speaker \d+\]|$)/g;
+	// Match blocks: [Speaker N] followed by content until the next speaker block (any [Name])
+	// or end of string. Speaker blocks are separated by \n\n in the cleaned transcript format,
+	// so we stop at \n\n[ to avoid capturing dialogue from other (named) speakers between turns.
+	const blockPattern = /\[Speaker (\d+)\]\r?\n([\s\S]*?)(?=\n\n\[|$)/g;
 	const profileMap = new Map<string, { lines: string[] }>();
 
 	let match: RegExpExecArray | null;
@@ -92,21 +102,35 @@ export function extractAttendeeLinks(content: string): Array<{ displayName: stri
 	const attendeesText = attendeesMatch[1];
 	const result: Array<{ displayName: string; wikiLink: string }> = [];
 
-	// Match: - [[People/Last, First|First Last]]
-	const wikiLinkPattern = /- \[\[([^\]|]+)\|([^\]]+)\]\]/g;
+	// Match wikilinks with a pipe alias, with or without leading "- " (but NOT image embeds ![[...]]):
+	//   [[Last, First|First Last]]  or  - [[Last, First|First Last]]
+	const wikiLinkWithPipePattern = /^-? ?(?<!!)(?<!!)\[\[([^\]|]+)\|([^\]]+)\]\]/gm;
 	let match: RegExpExecArray | null;
-	while ((match = wikiLinkPattern.exec(attendeesText)) !== null) {
+	while ((match = wikiLinkWithPipePattern.exec(attendeesText)) !== null) {
 		result.push({
 			displayName: match[2].trim(),
-			wikiLink: `[[${match[1]}|${match[2]}]]`
+			wikiLink: `[[${match[1].trim()}|${match[2].trim()}]]`
 		});
 	}
 
-	// Also match plain names: - Some Name (no wiki-link)
-	const plainNamePattern = /^- ([A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+)+)$/gm;
+	// Match wikilinks WITHOUT a pipe, with or without leading "- " (but NOT image embeds):
+	//   [[First Last]]  or  - [[First Last]]  (excludes ![[image.png]])
+	const wikiLinkNoPipePattern = /^-? ?(?<!!)\[\[([^\]|]+)\]\]/gm;
+	while ((match = wikiLinkNoPipePattern.exec(attendeesText)) !== null) {
+		const name = match[1].trim();
+		// Skip image file references
+		if (/\.(png|jpg|jpeg|gif|svg|webp|txt|md)$/i.test(name)) continue;
+		// Only add if not already covered by a piped wiki-link
+		if (!result.some(a => a.wikiLink.startsWith(`[[${name}`))) {
+			result.push({ displayName: name, wikiLink: `[[${name}]]` });
+		}
+	}
+
+	// Also match plain names (no wiki-link at all), with or without leading "- ":
+	const plainNamePattern = /^-? ?([A-Z][a-zA-Z]+(?: [A-Z][a-zA-Z]+)+)$/gm;
 	while ((match = plainNamePattern.exec(attendeesText)) !== null) {
 		const name = match[1].trim();
-		// Only add if not already covered by a wiki-link
+		// Only add if not already covered by any wiki-link entry
 		if (!result.some(a => a.displayName === name)) {
 			result.push({ displayName: name, wikiLink: name });
 		}
@@ -172,6 +196,30 @@ export function autoDetectMappings(
 
 	console.log('[autoDetectMappings] Result:', mappings.map(m => `${m.speakerId}→${m.attendeeName}(${m.confidence.toFixed(2)})`));
 	return mappings;
+}
+
+/**
+ * For each speaker profile, compute the best-matching attendee and confidence score
+ * regardless of threshold. Used to show hints in the manual assignment dialog.
+ */
+export function computeBestGuesses(
+	profiles: SpeakerProfile[],
+	attendees: Array<{ displayName: string; wikiLink: string }>
+): Map<string, SpeakerBestGuess> {
+	const result = new Map<string, SpeakerBestGuess>();
+	for (const profile of profiles) {
+		let best: { attendeeName: string; confidence: number } | null = null;
+		for (const attendee of attendees) {
+			const confidence = scoreSpeakerAttendee(profile, attendee);
+			if (!best || confidence > best.confidence) {
+				best = { attendeeName: attendee.displayName, confidence };
+			}
+		}
+		if (best && best.confidence > 0) {
+			result.set(profile.speakerId, best);
+		}
+	}
+	return result;
 }
 
 /**

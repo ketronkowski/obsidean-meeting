@@ -2,7 +2,7 @@ import { Plugin, Notice, TFile } from 'obsidian';
 import { MeetingProcessorSettings, DEFAULT_SETTINGS, MeetingProcessorSettingTab } from './src/ui/settings-tab';
 import { CopilotClientManager } from './src/copilot-client';
 import { MeetingRouter } from './src/meeting-router';
-import { validateMeetingFile } from './src/validators';
+import { validateMeetingFile, validateEmailNote, validateDailyNote } from './src/validators';
 import { StatusBarManager } from './src/ui/status-bar';
 import { SkillLoader } from './src/skill-loader';
 
@@ -19,7 +19,7 @@ export default class MeetingProcessorPlugin extends Plugin {
 
 		// Initialize components
 		this.statusBar = new StatusBarManager(this.addStatusBarItem());
-		this.copilotClient = new CopilotClientManager(this.settings);
+		this.copilotClient = new CopilotClientManager(this.app, this.settings);
 		
 		// Load skills
 		const pluginDir = (this.manifest as any).dir || '.obsidian/plugins/obsidean-meeting';
@@ -67,20 +67,38 @@ export default class MeetingProcessorPlugin extends Plugin {
 				return;
 			}
 
-			// Validate it's a meeting file
-			const validation = await validateMeetingFile(file, this.app, this.settings);
-			if (!validation.valid) {
-				new Notice(validation.error || 'Not a valid meeting file');
+			// Validate: try daily note first, then meeting, then email chain
+			const dailyNoteValidation = await validateDailyNote(file, this.app, this.settings);
+			if (dailyNoteValidation.valid) {
+				this.statusBar.show('Generating daily summary...', 0);
+				await this.router.processDailySummary(file);
 				return;
 			}
 
-			this.statusBar.show('Detecting meeting type...');
+			const meetingValidation = await validateMeetingFile(file, this.app, this.settings);
+			if (meetingValidation.valid) {
+				this.statusBar.show('Detecting meeting type...');
+				await this.router.process(file);
+				this.statusBar.show('Meeting processed successfully', 3000);
+				new Notice('Meeting processing complete!');
+				return;
+			}
 
-			// Route to appropriate handler
-			await this.router.process(file);
+			const emailValidation = await validateEmailNote(file, this.app, this.settings);
+			if (emailValidation.valid) {
+				this.statusBar.show('Processing email chain…', 0);
+				await this.router.processEmail(file);
+				// EmailChainHandler shows its own completion notice
+				return;
+			}
 
-			this.statusBar.show('Meeting processed successfully', 3000);
-			new Notice('Meeting processing complete!');
+			// None matched — give the user a useful error
+			new Notice(
+				`Cannot process this file.\n` +
+				`As daily note: ${dailyNoteValidation.error}\n` +
+				`As meeting: ${meetingValidation.error}\n` +
+				`As email chain: ${emailValidation.error}`
+			);
 		} catch (error) {
 			console.error('Meeting processing error:', error);
 			new Notice(`Error processing meeting: ${error.message}`);

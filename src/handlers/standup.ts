@@ -9,14 +9,18 @@ import { JiraManager } from '../jira/manager';
 import { PeopleManager } from '../people-manager';
 import { JiraKeyExtractor } from '../jira/extractor';
 import { SpeakerAttributionModal } from '../ui/speaker-attribution-modal';
+import { VoiceSpeakerResolver } from '../voice-speaker-resolver';
 import {
 	extractSpeakerProfiles,
 	extractAttendeeLinks,
 	autoDetectMappings,
+	computeBestGuesses,
 	rewriteTranscript,
 	extractTranscriptText
 } from '../speaker-resolver';
+import { cleanCopilotOutput } from '../output-cleaner';
 import * as mammoth from 'mammoth';
+import * as JSZip from 'jszip';
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 
@@ -33,6 +37,7 @@ export class StandupMeetingHandler {
 	private jiraManager: JiraManager;
 	private peopleManager: PeopleManager;
 	private jiraExtractor: JiraKeyExtractor;
+	private voiceResolver: VoiceSpeakerResolver;
 
 	constructor(app: App, settings: MeetingProcessorSettings, copilotClient: CopilotClientManager, skillLoader: SkillLoader, statusBar: StatusBarManager) {
 		this.app = app;
@@ -44,6 +49,7 @@ export class StandupMeetingHandler {
 		this.jiraManager = new JiraManager(copilotClient, settings);
 		this.peopleManager = new PeopleManager(app);
 		this.jiraExtractor = new JiraKeyExtractor();
+		this.voiceResolver = new VoiceSpeakerResolver(app, settings, statusBar);
 	}
 
 	/**
@@ -58,7 +64,7 @@ export class StandupMeetingHandler {
 				throw new Error('Could not determine team from filename');
 			}
 
-			const boardId = team === 'green' ? this.settings.greenBoardId : this.settings.magentaBoardId;
+			const boardId = this.settings.greenBoardId;
 			console.log(`Detected ${team} team standup (board ${boardId})`);
 
 			// Read content to determine mode
@@ -87,10 +93,11 @@ export class StandupMeetingHandler {
 		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n# [^#]|$)/);
 		if (transcriptMatch) {
 			const transcriptContent = transcriptMatch[1].trim();
-			// Check for substantial content OR file references (.txt, .docx, wiki links)
+			// Check for substantial content OR file references (.txt, .docx, .json, wiki links)
 			if (transcriptContent.length > 50 || 
 			    transcriptContent.includes('.txt') ||
 			    transcriptContent.includes('.docx') ||
+			    transcriptContent.includes('.json') ||
 			    transcriptContent.includes('![[')) {
 				return 'post-meeting';
 			}
@@ -140,7 +147,7 @@ export class StandupMeetingHandler {
 			console.log('Replaced existing JIRA section');
 		} else {
 			// Insert after Attendees section if it exists
-			const attendeesRegex = /# Attendees\s*\n[\s\S]*?(?=\n#|$)/;
+			const attendeesRegex = /# Attendees[^\n]*\n[\s\S]*?(?=\n#|$)/;
 			if (attendeesRegex.test(content)) {
 				newContent = content.replace(
 					attendeesRegex,
@@ -174,6 +181,19 @@ export class StandupMeetingHandler {
 		console.log('Post-meeting mode: processing transcript and summary...');
 
 		const content = await this.app.vault.read(file);
+
+		// 0a. Pre-extract screenshot attendees so the voice modal has the full candidate
+		//     list even before the Attendees section is written to the note.
+		const screenshotAttendees = await this.peekScreenshotAttendees(file, content);
+		console.log('[processPostMeeting] Pre-extracted screenshot attendees:', screenshotAttendees);
+
+		// 0. Voice speaker identification — updates .whisper file with real names.
+		//    MUST run before processAttendees (which reads the .whisper speakers array)
+		//    and before expandTranscriptEmbed (which consumes the embed path).
+		if (this.settings.voiceServiceEnabled) {
+			this.statusBar.show('Identifying speakers by voice...', 0);
+			await this.voiceResolver.identifyWhisperSpeakers(file, screenshotAttendees);
+		}
 
 		// 1. Process attendees (screenshot or expected list)
 		this.statusBar.show('Processing attendees...', 0);
@@ -218,7 +238,9 @@ export class StandupMeetingHandler {
 		const isEmbed = rawTranscript.length < 300 && (
 			rawTranscript.includes('![[') ||
 			rawTranscript.includes('.txt') ||
-			rawTranscript.includes('.docx')
+			rawTranscript.includes('.docx') ||
+			rawTranscript.includes('.json') ||
+			rawTranscript.includes('.whisper')
 		);
 
 		if (!isEmbed) {
@@ -233,14 +255,26 @@ export class StandupMeetingHandler {
 			return;
 		}
 
+		// Clean/format the resolved content to standard transcript format
+		const cleanResult = this.transcriptDetector.detectAndClean(resolved);
+		const toWrite = cleanResult.cleaned.length >= 20 ? cleanResult.cleaned : resolved;
+		console.log(`[expandTranscriptEmbed] Cleaned with: ${cleanResult.cleaner}, output length: ${toWrite.length}`);
+
+		// If sourced from a .whisper file, prepend a sentinel so resolveSpeakers
+		// knows the speaker names are already authoritative and skips the modal.
+		const isWhisperSource = rawTranscript.includes('.whisper');
+		const finalText = isWhisperSource
+			? `<!-- whisper-source -->\n${toWrite}`
+			: toWrite;
+
 		const updated = content.replace(
 			/# Transcript\s*\n[\s\S]*?(?=\n# [^#]|$)/,
-			`# Transcript\n\n${resolved}\n\n`
+			`# Transcript\n\n${finalText}\n\n`
 		);
 
 		if (updated !== content) {
 			await this.app.vault.modify(file, updated);
-			console.log(`[expandTranscriptEmbed] Expanded embed to ${resolved.length} chars of inline text`);
+			console.log(`[expandTranscriptEmbed] Expanded embed to ${finalText.length} chars of inline text`);
 		}
 	}
 
@@ -254,6 +288,11 @@ export class StandupMeetingHandler {
 
 		if (!rawTranscript) {
 			console.log('[resolveSpeakers] No transcript section found, skipping');
+			return;
+		}
+
+		if (rawTranscript.includes('<!-- whisper-source -->')) {
+			console.log('[resolveSpeakers] Transcript sourced from .whisper file — speaker names are authoritative, skipping modal');
 			return;
 		}
 
@@ -273,8 +312,17 @@ export class StandupMeetingHandler {
 		const attendees = extractAttendeeLinks(content);
 		console.log('[resolveSpeakers] Attendees found:', attendees.map(a => a.displayName));
 
-		if (attendees.length === 0) {
-			console.log('[resolveSpeakers] No attendees found, skipping');
+		// Augment with all known People profiles so the modal always has a full roster
+		const vaultPeople = this.peopleManager.getAllPeople();
+		const attendeeNames = new Set(attendees.map(a => a.displayName.toLowerCase()));
+		const allCandidates = [
+			...attendees,
+			...vaultPeople.filter(p => !attendeeNames.has(p.displayName.toLowerCase()))
+		];
+		console.log('[resolveSpeakers] All candidates for modal:', allCandidates.length, '(attendees:', attendees.length, '+ vault:', allCandidates.length - attendees.length, ')');
+
+		if (allCandidates.length === 0) {
+			console.log('[resolveSpeakers] No candidates found, skipping');
 			return;
 		}
 
@@ -286,9 +334,10 @@ export class StandupMeetingHandler {
 			return;
 		}
 
-		const autoMappings = autoDetectMappings(profiles, attendees);
+		const autoMappings = autoDetectMappings(profiles, allCandidates);
 		const resolvedIds = new Set(autoMappings.map(m => m.speakerId));
 		const unresolvedProfiles = profiles.filter(p => !resolvedIds.has(p.speakerId));
+		const bestGuesses = computeBestGuesses(unresolvedProfiles, allCandidates);
 
 		console.log('[resolveSpeakers] Auto-detected:', autoMappings.map(m => `${m.speakerId} → ${m.attendeeName} (${Math.round(m.confidence * 100)}%)`));
 		console.log('[resolveSpeakers] Unresolved speakers:', unresolvedProfiles.map(p => p.speakerId));
@@ -299,7 +348,8 @@ export class StandupMeetingHandler {
 				this.app,
 				unresolvedProfiles,
 				autoMappings,
-				attendees,
+				allCandidates,
+				bestGuesses,
 				resolve
 			).open();
 		});
@@ -311,7 +361,7 @@ export class StandupMeetingHandler {
 			return;
 		}
 
-		const isEmbed = rawTranscript.includes('![[') || (rawTranscript.length < 300 && rawTranscript.includes('.txt'));
+		const isEmbed = rawTranscript.includes('![[') || (rawTranscript.length < 300 && (rawTranscript.includes('.txt') || rawTranscript.includes('.json')));
 		let rewrittenTranscript = transcriptText;
 		for (const mapping of finalMappings) {
 			const pattern = new RegExp(`\\[${mapping.speakerId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\]`, 'g');
@@ -344,11 +394,32 @@ export class StandupMeetingHandler {
 		return summaryContent.length > 0;
 	}
 
+	/**
+	 * Extract screenshot attendee names without writing anything to the note.
+	 * Used to pre-seed the voice speaker modal before processAttendees runs.
+	 */
+	private async peekScreenshotAttendees(file: TFile, content: string): Promise<string[]> {
+		const attendeesSectionMatch = content.match(/^# Attendees\n([\s\S]*?)(?=^# |\Z)/m);
+		const attendeesContent = attendeesSectionMatch ? attendeesSectionMatch[1] : '';
+		const screenshotPattern = /!\[\[(SCR-[^\]]+\.png)\]\]/g;
+		const screenshots: string[] = [];
+		let match;
+		while ((match = screenshotPattern.exec(attendeesContent)) !== null) {
+			screenshots.push(match[1]);
+		}
+		if (screenshots.length === 0) return [];
+		return this.extractFromScreenshots(file, screenshots);
+	}
+
 	private async processAttendees(file: TFile, content: string): Promise<void> {
 		console.log('Processing standup attendees...');
+
+		// Re-read content — voice analysis may have updated the .whisper file, but the
+		// meeting note itself hasn't changed; we still need fresh content for the regex match.
+		const freshContent = await this.app.vault.read(file);
 		
 		// Only search for screenshots within the Attendees section
-		const attendeesSectionMatch = content.match(/^# Attendees\n([\s\S]*?)(?=^# |\Z)/m);
+		const attendeesSectionMatch = freshContent.match(/^# Attendees\n([\s\S]*?)(?=^# |\Z)/m);
 		const attendeesContent = attendeesSectionMatch ? attendeesSectionMatch[1] : '';
 
 		// Check for screenshot references in Attendees section only
@@ -362,16 +433,36 @@ export class StandupMeetingHandler {
 
 		let extractedNames: string[] = [];
 
-		// Try screenshots first if available
+		// Priority 1: Screenshots — capture ALL attendees including those who didn't speak.
+		// Always try screenshots when they're present; don't block them with whisper data.
 		if (screenshots.length > 0) {
 			console.log(`Found ${screenshots.length} screenshots for attendee extraction`);
 			extractedNames = await this.extractFromScreenshots(file, screenshots);
 		}
-		
-		// Fall back to content extraction if screenshots didn't work
+
+		// Priority 2: .whisper speaker names — use as supplement/fallback.
+		// After voice analysis, these are the real names identified by voice.
+		// If screenshots failed or weren't present, use these as primary source.
+		const whisperNames = await this.extractWhisperSpeakers(freshContent);
+		if (whisperNames.length > 0) {
+			if (extractedNames.length === 0) {
+				console.log('[processAttendees] No screenshots, using .whisper identified speakers:', whisperNames);
+				extractedNames = whisperNames;
+			} else {
+				// Merge: add whisper speakers not already captured by screenshots
+				const nameSet = new Set(extractedNames.map(n => n.toLowerCase()));
+				const extra = whisperNames.filter(n => !nameSet.has(n.toLowerCase()));
+				if (extra.length > 0) {
+					console.log('[processAttendees] Merging additional .whisper speakers:', extra);
+					extractedNames = [...extractedNames, ...extra];
+				}
+			}
+		}
+
+		// Priority 3: Content extraction as last resort
 		if (extractedNames.length === 0) {
 			console.log('Falling back to content extraction');
-			extractedNames = await this.extractFromContent(content);
+			extractedNames = await this.extractFromContent(freshContent);
 		}
 
 		if (extractedNames.length > 0) {
@@ -379,6 +470,68 @@ export class StandupMeetingHandler {
 			await this.updateAttendeesSection(file, extractedNames);
 		} else {
 			console.log('No attendees extracted');
+		}
+	}
+
+	/**
+	 * Extract real speaker names from a .whisper embed in the Transcript section.
+	 * Returns identified speakers (non-generic, non-Unknown) from the top-level
+	 * `speakers` array in the whisper metadata — these become the initial attendees list.
+	 */
+	private async extractWhisperSpeakers(content: string): Promise<string[]> {
+		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n# [^#]|$)/);
+		if (!transcriptMatch) return [];
+
+		const rawTranscript = transcriptMatch[1].trim();
+		if (!rawTranscript.includes('.whisper')) return [];
+
+		let filename = rawTranscript.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim();
+		if (!filename.toLowerCase().endsWith('.whisper')) return [];
+
+		try {
+			let buf: Buffer;
+			const isAbsolutePath = filename.startsWith('/');
+			const isHomePath = filename.startsWith('~');
+
+			if (isAbsolutePath || isHomePath) {
+				const fullPath = isHomePath ? filename.replace(/^~/, homedir()) : filename;
+				buf = await readFile(fullPath);
+			} else {
+				const possiblePaths = [filename, `Media/${filename}`, `Attachments/${filename}`, `Files/${filename}`];
+				let docFile: TFile | null = null;
+				for (const path of possiblePaths) {
+					const f = this.app.vault.getAbstractFileByPath(path);
+					if (f instanceof TFile) { docFile = f; break; }
+				}
+				if (!docFile) {
+					console.warn('[extractWhisperSpeakers] .whisper file not found in vault:', filename);
+					return [];
+				}
+				const arrayBuffer = await this.app.vault.readBinary(docFile);
+				buf = Buffer.from(arrayBuffer);
+			}
+
+			const zip = await JSZip.loadAsync(buf);
+			const metaEntry = zip.file('metadata.json');
+			if (!metaEntry) return [];
+
+			const data = JSON.parse(await metaEntry.async('text'));
+			if (!Array.isArray(data.speakers)) return [];
+
+			const genericPattern = /^Speaker \d+$/i;
+			const names: string[] = data.speakers
+				.map((s: any) => (s.name ?? '').trim())
+				.filter((name: string) =>
+					name.length > 0 &&
+					name.toLowerCase() !== 'unknown' &&
+					!genericPattern.test(name)
+				);
+
+			console.log('[extractWhisperSpeakers] Identified speakers:', names);
+			return names;
+		} catch (error) {
+			console.warn('[extractWhisperSpeakers] Failed to read .whisper file:', error);
+			return [];
 		}
 	}
 
@@ -404,7 +557,7 @@ export class StandupMeetingHandler {
 				
 				const prompt = `Extract all participant names from this Microsoft Teams meeting screenshot. Output ONLY a comma-separated list of full names like: "First Last, First Last". No other text or explanation.`;
 
-				const response = await this.copilotClient.analyzeImageWithCLI(fullPath, prompt);
+				const response = await this.copilotClient.analyzeImageWithCLI(fullPath, prompt, 'Analyzing attendee screenshot…');
 				console.log('Vision response:', response);
 				
 				if (response.includes("don't see") || response.includes("cannot see") || 
@@ -449,24 +602,33 @@ export class StandupMeetingHandler {
 	}
 
 	/**
-	 * Extract attendees from meeting content (fallback method)
+	 * Extract attendees from meeting content (fallback method).
+	 * Only scans content BEFORE the Transcript section to avoid picking up
+	 * speaker labels or file-embed references from the transcript.
 	 */
 	private async extractFromContent(content: string): Promise<string[]> {
 		console.log('Extracting attendees from content...');
+
+		// Strip the Transcript section and everything after it so we only look at
+		// the header sections (Attendees, Notes, etc.) for speaker patterns.
+		const transcriptStart = content.search(/^# Transcript/m);
+		const searchContent = transcriptStart > 0 ? content.substring(0, transcriptStart) : content;
 		
 		const names: Set<string> = new Set();
 		const speakerPattern = /(?:\[([^\]]+)\]|^\*\*([^:*]+):\*\*)/gm;
-		const jiraKeyPattern = /^[A-Z]+-\d+$/; // Match JIRA keys like GLCP-12345
-		const speakerNumberPattern = /^Speaker \d+$/; // Match "Speaker 1", "Speaker 2", etc.
+		const jiraKeyPattern = /^[A-Z]+-\d+$/;
+		const speakerNumberPattern = /^Speaker \d+$/i;
+		const fileExtPattern = /\.\w{2,10}$/;
 		let match;
 		
-		while ((match = speakerPattern.exec(content)) !== null) {
+		while ((match = speakerPattern.exec(searchContent)) !== null) {
 			const name = (match[1] || match[2]).trim();
 			
-			// Filter out JIRA keys, speaker numbers, and other non-names
 			if (name && 
 			    name.length > 2 && 
 			    name.length < 50 && 
+			    !name.startsWith('[') &&         // Exclude wiki-link fragments like [filename.whisper
+			    !fileExtPattern.test(name) &&    // Exclude file paths with extensions
 			    !jiraKeyPattern.test(name) && 
 			    !speakerNumberPattern.test(name) &&
 			    name !== 'Learn more') {
@@ -503,7 +665,7 @@ export class StandupMeetingHandler {
 		const content = await this.app.vault.read(file);
 		const attendeesSection = `# Attendees\n\n${attendeeLinks.join('\n')}`;
 		
-		const attendeesRegex = /# Attendees\s*\n[\s\S]*?(?=\n#|$)/;
+		const attendeesRegex = /# Attendees[^\n]*\n[\s\S]*?(?=\n#|$)/;
 		let newContent: string;
 		
 		if (attendeesRegex.test(content)) {
@@ -576,6 +738,8 @@ export class StandupMeetingHandler {
 			rawTranscript.includes('.docx') ||
 			rawTranscript.includes('.doc') ||
 			rawTranscript.includes('.txt') ||
+			rawTranscript.includes('.json') ||
+			rawTranscript.includes('.whisper') ||
 			rawTranscript.includes('![[')
 		);
 
@@ -592,8 +756,10 @@ export class StandupMeetingHandler {
 
 			const isTxtFile = filename.toLowerCase().endsWith('.txt');
 			const isDocxFile = filename.toLowerCase().endsWith('.docx') || filename.toLowerCase().endsWith('.doc');
+			const isJsonFile = filename.toLowerCase().endsWith('.json');
+			const isWhisperFile = filename.toLowerCase().endsWith('.whisper');
 
-			if (!isTxtFile && !isDocxFile) {
+			if (!isTxtFile && !isDocxFile && !isJsonFile && !isWhisperFile) {
 				console.warn('[resolveTranscriptContent] Unsupported file type:', filename);
 				return null;
 			}
@@ -605,9 +771,17 @@ export class StandupMeetingHandler {
 				const fullPath = isHomePath ? filename.replace(/^~/, homedir()) : filename;
 				console.log('[resolveTranscriptContent] Reading external file:', fullPath);
 
-				if (isTxtFile) {
+				if (isWhisperFile) {
+					const buffer = await readFile(fullPath);
+					const zip = await JSZip.loadAsync(buffer);
+					const metaEntry = zip.file('metadata.json');
+					if (!metaEntry) throw new Error('.whisper file is missing metadata.json');
+					const text = await metaEntry.async('text');
+					console.log('[resolveTranscriptContent] Extracted .whisper metadata.json, length:', text.length);
+					return text;
+				} else if (isTxtFile || isJsonFile) {
 					const text = await readFile(fullPath, 'utf-8');
-					console.log('[resolveTranscriptContent] Read external .txt, length:', text.length);
+					console.log('[resolveTranscriptContent] Read external file, length:', text.length);
 					return text;
 				} else {
 					const buffer = await readFile(fullPath);
@@ -634,9 +808,18 @@ export class StandupMeetingHandler {
 					return null;
 				}
 
-				if (isTxtFile) {
+				if (isWhisperFile) {
+					const arrayBuffer = await this.app.vault.readBinary(docFile);
+					const buffer = Buffer.from(arrayBuffer);
+					const zip = await JSZip.loadAsync(buffer);
+					const metaEntry = zip.file('metadata.json');
+					if (!metaEntry) throw new Error('.whisper file is missing metadata.json');
+					const text = await metaEntry.async('text');
+					console.log('[resolveTranscriptContent] Extracted .whisper metadata.json, length:', text.length);
+					return text;
+				} else if (isTxtFile || isJsonFile) {
 					const text = await this.app.vault.read(docFile);
-					console.log('[resolveTranscriptContent] Read vault .txt, length:', text.length);
+					console.log('[resolveTranscriptContent] Read vault file, length:', text.length);
 					return text;
 				} else {
 					const arrayBuffer = await this.app.vault.readBinary(docFile);
@@ -743,16 +926,25 @@ ${contentToSummarize}
 Please generate a summary focused on: what was completed yesterday, what's planned for today, and any blockers mentioned.`;
 
 			// Get summary from Copilot
-			const summary = await this.copilotClient.sendPrompt(prompt);
-			
-			// Update Summary section
-			const summaryRegex = /# Summary\s*\n[\s\S]*?(?=\n#|$)/;
-			let newContent: string;
-			
-			if (summaryRegex.test(content)) {
-				newContent = content.replace(summaryRegex, `# Summary\n\n${summary}\n\n`);
+			const rawSummary = await this.copilotClient.sendPrompt(prompt, undefined, 'Generating transcript summary…');
+			const summary = cleanCopilotOutput(rawSummary);
+
+			// Strip legacy sections first, then update # Summary
+			let newContent = content;
+			newContent = newContent.replace(/\n# Transcript Summary[^\n]*\n[\s\S]*?(?=\n# [^#]|$)/, '\n');
+			newContent = newContent.replace(/\n# Unified Summary[^\n]*\n[\s\S]*?(?=\n# [^#]|$)/, '\n');
+
+			const summaryRegex = /^# Summary[^\n]*\n[\s\S]*?(?=^# [^#]|\Z)/m;
+			if (summaryRegex.test(newContent)) {
+				newContent = newContent.replace(summaryRegex, `# Summary\n\n${summary}\n\n`);
 			} else {
-				newContent = content + `\n\n# Summary\n\n${summary}\n`;
+				// Insert before # Notes if it exists, otherwise append
+				const notesRegex = /^(# Notes\b)/m;
+				if (notesRegex.test(newContent)) {
+					newContent = newContent.replace(notesRegex, `# Summary\n\n${summary}\n\n$1`);
+				} else {
+					newContent = newContent + `\n\n# Summary\n\n${summary}\n`;
+				}
 			}
 
 			await this.app.vault.modify(file, newContent);
@@ -818,18 +1010,19 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 		console.log('Transcript content length:', transcriptContent.length);
 		console.log('Transcript preview:', transcriptContent.substring(0, 200));
 
-		// Check if transcript is a file reference (Word doc, etc.) and try to extract text
+		// Check if transcript is a file reference (Word doc, .whisper, etc.) and try to extract text
 		if (transcriptContent.length < 200 && (
 			transcriptContent.includes('.docx') ||
 			transcriptContent.includes('.doc') ||
 			transcriptContent.includes('.txt') ||
+			transcriptContent.includes('.whisper') ||
 			transcriptContent.includes('![[') // Embedded file
 		)) {
 			console.log('Detected file reference in transcript, attempting to extract text...');
 			
 			try {
 				// Extract filename from various formats:
-				// ![[filename.docx]] or ![[filename.txt]]
+				// ![[filename.docx]] or ![[filename.txt]] or ![[filename.whisper]]
 				// [[filename.docx]] or [[filename.txt]]
 				// filename.docx or filename.txt
 				// /absolute/path/file.docx or /absolute/path/file.txt
@@ -846,9 +1039,10 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 				const isHomePath = filename.startsWith('~');
 				const isTxtFile = filename.toLowerCase().endsWith('.txt');
 				const isDocxFile = filename.toLowerCase().endsWith('.docx');
+				const isWhisperFile = filename.toLowerCase().endsWith('.whisper');
 				
-				if (!isTxtFile && !isDocxFile) {
-					console.warn('Only .txt and .docx files are supported, found:', filename);
+				if (!isTxtFile && !isDocxFile && !isWhisperFile) {
+					console.warn('Only .txt, .docx, and .whisper files are supported, found:', filename);
 					return null;
 				}
 				
@@ -864,7 +1058,16 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 					
 					console.log('Reading external file:', fullPath);
 					
-					if (isTxtFile) {
+					if (isWhisperFile) {
+						const buffer = await readFile(fullPath);
+						const zip = await JSZip.loadAsync(buffer);
+						const metaEntry = zip.file('metadata.json');
+						if (!metaEntry) throw new Error('.whisper file is missing metadata.json');
+						const jsonText = await metaEntry.async('text');
+						const cleanResult = this.transcriptDetector.detectAndClean(jsonText);
+						transcriptContent = cleanResult.cleaned.length >= 20 ? cleanResult.cleaned : jsonText;
+						console.log('Extracted .whisper transcript, length:', transcriptContent.length);
+					} else if (isTxtFile) {
 						// Read .txt file as text
 						transcriptContent = await readFile(fullPath, 'utf-8');
 						console.log('Read external .txt file, length:', transcriptContent.length);
@@ -905,7 +1108,17 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 						return null;
 					}
 					
-					if (isTxtFile) {
+					if (isWhisperFile) {
+						const arrayBuffer = await this.app.vault.readBinary(docFile);
+						const buffer = Buffer.from(arrayBuffer);
+						const zip = await JSZip.loadAsync(buffer);
+						const metaEntry = zip.file('metadata.json');
+						if (!metaEntry) throw new Error('.whisper file is missing metadata.json');
+						const jsonText = await metaEntry.async('text');
+						const cleanResult = this.transcriptDetector.detectAndClean(jsonText);
+						transcriptContent = cleanResult.cleaned.length >= 20 ? cleanResult.cleaned : jsonText;
+						console.log('Extracted vault .whisper transcript, length:', transcriptContent.length);
+					} else if (isTxtFile) {
 						// Read .txt file as text
 						transcriptContent = await this.app.vault.read(docFile);
 						console.log('Read vault .txt file, length:', transcriptContent.length);
@@ -942,19 +1155,17 @@ Please generate a summary focused on: what was completed yesterday, what's plann
 
 Format as clear bullet points organized by team member when possible.
 
-CRITICAL: Do NOT include any markdown headings (# or ##) in your response. Start directly with the content.
+Rules:
+- Start your response DIRECTLY with content — no preamble, no "Meeting Summary", no participant list
+- Do NOT include any markdown headings (# or ##)
 
 Transcript:
 
 ${transcriptContent}`;
 
-			const summary = await this.copilotClient.sendPrompt(prompt);
+			const summary = await this.copilotClient.sendPrompt(prompt, undefined, 'Generating Copilot summary…');
 			
-			// Strip any headings the AI might have added anyway
-			let cleaned = summary.trim();
-			cleaned = cleaned.replace(/^#+\s+.*?\n+/gm, ''); // Remove all markdown headings
-			
-			return cleaned.trim();
+			return cleanCopilotOutput(summary);
 		} catch (error) {
 			console.error('Error generating transcript summary:', error);
 			return null;
@@ -1024,13 +1235,8 @@ CRITICAL: Do NOT include any markdown headings (# or ##) in your response. Start
 
 Generate the unified summary:`;
 
-			const unified = await this.copilotClient.sendPrompt(prompt);
-			
-			// Strip any headings the AI might have added anyway
-			let cleaned = unified.trim();
-			cleaned = cleaned.replace(/^#+\s+.*?\n+/gm, ''); // Remove all markdown headings
-			
-			return cleaned.trim();
+			const unified = await this.copilotClient.sendPrompt(prompt, undefined, 'Combining summaries…');
+			return cleanCopilotOutput(unified);
 		} catch (error) {
 			console.error('Error combining summaries:', error);
 			return null;
@@ -1038,46 +1244,38 @@ Generate the unified summary:`;
 	}
 
 	/**
-	 * Update file with all summary sections in correct order
+	 * Update file with summary in correct position (before # Notes).
+	 * Legacy # Transcript Summary and # Unified Summary sections are removed.
 	 */
 	private async updateSummarySections(
 		file: TFile, 
 		content: string, 
 		unifiedSummary: string, 
-		transcriptSummary: string
+		_transcriptSummary: string
 	): Promise<void> {
 		console.log('Updating summary sections...');
 		
 		let newContent = content;
 
-		// Insert or update Transcript Summary (above Transcript)
-		const transcriptSummarySection = `# Transcript Summary\n\n${transcriptSummary}\n\n`;
-		const transcriptSummaryRegex = /# Transcript Summary[\s\S]*?(?=\n# [^#]|$)/;
-		
-		if (transcriptSummaryRegex.test(newContent)) {
-			newContent = newContent.replace(transcriptSummaryRegex, transcriptSummarySection.trimEnd());
-		} else {
-			const transcriptRegex = /(# Transcript\s*\n)/;
-			if (transcriptRegex.test(newContent)) {
-				newContent = newContent.replace(transcriptRegex, transcriptSummarySection + '$1');
-			}
-		}
+		// Remove legacy sections before inserting
+		newContent = newContent.replace(/\n# Transcript Summary[^\n]*\n[\s\S]*?(?=\n# [^#]|$)/, '\n');
+		newContent = newContent.replace(/\n# Unified Summary[^\n]*\n[\s\S]*?(?=\n# [^#]|$)/, '\n');
 
-		// Insert or update Unified Summary (above Copilot Summary)
-		const unifiedSummarySection = `# Unified Summary\n\n${unifiedSummary}\n\n`;
-		const unifiedSummaryRegex = /# Unified Summary[\s\S]*?(?=\n# [^#]|$)/;
-		
-		if (unifiedSummaryRegex.test(newContent)) {
-			newContent = newContent.replace(unifiedSummaryRegex, unifiedSummarySection.trimEnd());
+		// Insert or update # Summary using line-anchored multiline regex
+		const summaryRegex = /^# Summary[^\n]*\n[\s\S]*?(?=^# [^#]|\Z)/m;
+		if (summaryRegex.test(newContent)) {
+			newContent = newContent.replace(summaryRegex, `# Summary\n\n${unifiedSummary}\n\n`);
 		} else {
-			const copilotSummaryRegex = /(# Copilot Summary\s*\n)/;
-			if (copilotSummaryRegex.test(newContent)) {
-				newContent = newContent.replace(copilotSummaryRegex, unifiedSummarySection + '$1');
+			const notesRegex = /^(# Notes\b)/m;
+			if (notesRegex.test(newContent)) {
+				newContent = newContent.replace(notesRegex, `# Summary\n\n${unifiedSummary}\n\n$1`);
+			} else {
+				newContent = newContent + `\n\n# Summary\n\n${unifiedSummary}\n`;
 			}
 		}
 
 		await this.app.vault.modify(file, newContent);
-		console.log('All summary sections updated');
+		console.log('Summary section updated');
 	}
 
 	private async extractJiraUpdates(file: TFile, content: string): Promise<void> {

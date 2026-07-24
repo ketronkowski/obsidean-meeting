@@ -1,9 +1,17 @@
 # Transcript Cleaning Skill
 
+> **Legacy design note — not loaded by the plugin.** This skill file is no longer read by `SkillLoader.getSkill()`; the logic it describes has been hard-coded in TypeScript. Kept for historical/design reference only. See `docs/REFERENCE.md` §10.
+
 ## Purpose
 Clean up meeting transcripts from various sources, removing timestamps, URLs, and formatting artifacts while preserving conversation flow.
 
 ## Supported Formats
+
+> This skill file only describes the 4 plain-text/paste formats. The real
+> pipeline (`src/transcript/`) has **7 cleaners total**, tried in priority
+> order — see `docs/REFERENCE.md` §4 for the full, authoritative list
+> including the two JSON formats (MacWhisper JSON, `.whisper` metadata) and
+> Google Recorder.
 
 ### Format 1: Direct Teams Paste
 **Characteristics:**

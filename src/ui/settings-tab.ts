@@ -7,7 +7,9 @@ export interface MeetingProcessorSettings {
 	copilotCliPath: string;
 	
 	// Vault Paths
+	dailyNotesFolder: string;
 	meetingsFolder: string;
+	notesFolder: string;
 	peopleFolder: string;
 	mediaFolder: string;
 	templatesFolder: string;
@@ -21,18 +23,28 @@ export interface MeetingProcessorSettings {
 	jiraApiToken: string;
 	jiraBaseUrl: string;
 	greenBoardId: string;
-	magentaBoardId: string;
 	jiraProjectKey: string;
 	
 	// Meeting Detection
 	standupKeywords: string;
 	filenamePattern: string;
+
+	// Voice Speaker Identification
+	voiceServiceEnabled: boolean;
+	voiceServiceBinaryPath: string;
+	voiceServicePort: number;
+	voiceServiceAutoStart: boolean;
+
+	// MacWhisper Integration
+	macWhisperTranscriptsDir: string;
 }
 
 export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	model: 'claude-sonnet-4',
 	copilotCliPath: 'copilot', // Will be auto-detected or set by user
+	dailyNotesFolder: 'Daily Notes',
 	meetingsFolder: 'Meetings',
+	notesFolder: 'Notes',
 	peopleFolder: 'People',
 	mediaFolder: 'Media',
 	templatesFolder: 'Templates',
@@ -42,10 +54,14 @@ export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	jiraApiToken: '',
 	jiraBaseUrl: 'https://hpe.atlassian.net',
 	greenBoardId: '214',
-	magentaBoardId: '317',
 	jiraProjectKey: 'GLCP',
-	standupKeywords: 'Green Standup, Magenta Standup',
-	filenamePattern: 'YYYY-MM-DD - *.md'
+	standupKeywords: 'Green Standup',
+	filenamePattern: 'YYYY-MM-DD - *.md',
+	voiceServiceEnabled: true,
+	voiceServiceBinaryPath: 'whisper-speaker-id',
+	voiceServicePort: 8765,
+	voiceServiceAutoStart: true,
+	macWhisperTranscriptsDir: '~/Documents/Mac Whisper/Meeting Transcripts',
 };
 
 export class MeetingProcessorSettingTab extends PluginSettingTab {
@@ -94,6 +110,17 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 		containerEl.createEl('h2', { text: 'Vault Paths' });
 
 		new Setting(containerEl)
+			.setName('Daily Notes Folder')
+			.setDesc('Folder containing daily notes (YYYY-MM-DD.md files)')
+			.addText(text => text
+				.setPlaceholder('Daily Notes')
+				.setValue(this.plugin.settings.dailyNotesFolder)
+				.onChange(async (value) => {
+					this.plugin.settings.dailyNotesFolder = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName('Meetings Folder')
 			.setDesc('Folder containing meeting notes')
 			.addText(text => text
@@ -101,6 +128,17 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.meetingsFolder)
 				.onChange(async (value) => {
 					this.plugin.settings.meetingsFolder = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Notes Folder')
+			.setDesc('Folder containing notes and email chain notes')
+			.addText(text => text
+				.setPlaceholder('Notes')
+				.setValue(this.plugin.settings.notesFolder)
+				.onChange(async (value) => {
+					this.plugin.settings.notesFolder = value;
 					await this.plugin.saveSettings();
 				}));
 
@@ -212,17 +250,6 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Magenta Team Board ID')
-			.setDesc('JIRA board ID for Magenta Team')
-			.addText(text => text
-				.setPlaceholder('317')
-				.setValue(this.plugin.settings.magentaBoardId)
-				.onChange(async (value) => {
-					this.plugin.settings.magentaBoardId = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
 			.setName('JIRA Project Key')
 			.setDesc('JIRA project key (e.g., GLCP)')
 			.addText(text => text
@@ -240,7 +267,7 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 			.setName('Standup Keywords')
 			.setDesc('Comma-separated keywords to identify standup meetings')
 			.addText(text => text
-				.setPlaceholder('Green Standup, Magenta Standup')
+				.setPlaceholder('Green Standup')
 				.setValue(this.plugin.settings.standupKeywords)
 				.onChange(async (value) => {
 					this.plugin.settings.standupKeywords = value;
@@ -254,6 +281,65 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				.setPlaceholder('YYYY-MM-DD - *.md')
 				.setValue(this.plugin.settings.filenamePattern)
 				.setDisabled(true)); // Read-only for now
+
+		// Voice Speaker Identification
+		containerEl.createEl('h2', { text: 'Voice Speaker Identification' });
+
+		new Setting(containerEl)
+			.setName('Enable voice identification')
+			.setDesc('Use whisper-speaker-id to identify speakers by voice in .whisper files')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.voiceServiceEnabled)
+				.onChange(async (value) => {
+					this.plugin.settings.voiceServiceEnabled = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Binary path')
+			.setDesc('Full path to the whisper-speaker-id executable. Use ~/git/whisper-speaker-id/.venv/bin/whisper-speaker-id if installed from source.')
+			.addText(text => text
+				.setPlaceholder('~/git/whisper-speaker-id/.venv/bin/whisper-speaker-id')
+				.setValue(this.plugin.settings.voiceServiceBinaryPath)
+				.onChange(async (value) => {
+					this.plugin.settings.voiceServiceBinaryPath = value || 'whisper-speaker-id';
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Service port')
+			.setDesc('HTTP port for the voice analysis daemon')
+			.addText(text => text
+				.setPlaceholder('8765')
+				.setValue(String(this.plugin.settings.voiceServicePort))
+				.onChange(async (value) => {
+					const port = parseInt(value, 10);
+					if (!isNaN(port) && port > 0 && port < 65536) {
+						this.plugin.settings.voiceServicePort = port;
+						await this.plugin.saveSettings();
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('Auto-start service')
+			.setDesc('Automatically start the voice analysis daemon when processing a meeting')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.voiceServiceAutoStart)
+				.onChange(async (value) => {
+					this.plugin.settings.voiceServiceAutoStart = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('MacWhisper Transcripts Directory')
+			.setDesc('Path to your MacWhisper transcripts folder. When set, the plugin prefers .whisper files here (which have up-to-date speaker names) over stale vault copies.')
+			.addText(text => text
+				.setPlaceholder('~/Documents/Mac Whisper/Meeting Transcripts')
+				.setValue(this.plugin.settings.macWhisperTranscriptsDir)
+				.onChange(async (value) => {
+					this.plugin.settings.macWhisperTranscriptsDir = value;
+					await this.plugin.saveSettings();
+				}));
 
 		// Reset button
 		new Setting(containerEl)

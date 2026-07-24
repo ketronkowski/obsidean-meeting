@@ -21,17 +21,17 @@ export class SkillLoader {
 	}
 
 	/**
-	 * Load all skill files from the skills/ directory
+	 * Load all skill files from the skills/ directory.
+	 * Only these three are actually injected into prompts by the
+	 * handlers (see getSkill() callers in handlers/*.ts); the other
+	 * six original skill files were relabeled as design notes under
+	 * docs/legacy-skills/ since their logic is now hard-coded in TS.
 	 */
 	async loadAll(): Promise<void> {
 		const skillFiles = [
-			'meeting-router.md',
-			'general-meeting.md',
-			'standup-meeting.md',
-			'transcript-cleanup.md',
 			'summary-generation.md',
-			'jira-population.md',
-			'attendee-extraction.md'
+			'email-summary.md',
+			'daily-summary.md',
 		];
 
 		for (const filename of skillFiles) {

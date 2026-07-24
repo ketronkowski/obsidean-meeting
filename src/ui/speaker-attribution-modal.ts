@@ -1,5 +1,5 @@
-import { App, Modal, Setting } from 'obsidian';
-import { SpeakerProfile, SpeakerMapping } from '../speaker-resolver';
+import { App, Modal } from 'obsidian';
+import { SpeakerProfile, SpeakerMapping, SpeakerBestGuess } from '../speaker-resolver';
 
 /**
  * Modal dialog for resolving generic [Speaker N] labels to real attendee names.
@@ -9,24 +9,29 @@ export class SpeakerAttributionModal extends Modal {
 	private unresolvedProfiles: SpeakerProfile[];
 	private autoMappings: SpeakerMapping[];
 	private attendees: Array<{ displayName: string; wikiLink: string }>;
+	private bestGuesses: Map<string, SpeakerBestGuess>;
 	private resolve: (mappings: SpeakerMapping[]) => void;
 	private pendingMappings: Map<string, string>; // speakerId → displayName (or '')
 	private overrides: Map<string, string>;       // speakerId → displayName for auto-detected overrides
+	private freeTextNames: Map<string, string>;   // speakerId → free-text name entry
 
 	constructor(
 		app: App,
 		unresolvedProfiles: SpeakerProfile[],
 		autoMappings: SpeakerMapping[],
 		attendees: Array<{ displayName: string; wikiLink: string }>,
+		bestGuesses: Map<string, SpeakerBestGuess>,
 		resolve: (mappings: SpeakerMapping[]) => void
 	) {
 		super(app);
 		this.unresolvedProfiles = unresolvedProfiles;
 		this.autoMappings = autoMappings;
 		this.attendees = attendees;
+		this.bestGuesses = bestGuesses;
 		this.resolve = resolve;
 		this.pendingMappings = new Map();
 		this.overrides = new Map();
+		this.freeTextNames = new Map();
 
 		// Initialize all unresolved as empty (skip)
 		for (const profile of unresolvedProfiles) {
@@ -166,12 +171,14 @@ export class SpeakerAttributionModal extends Modal {
 			});
 		}
 
-		// Assignment dropdown
+		// Assignment row: label + dropdown + best-guess hint
 		const assignRow = row.createDiv({ cls: 'speaker-attribution-assign-row' });
 		assignRow.createEl('span', { text: 'Assign to: ', cls: 'speaker-attribution-assign-label' });
 
 		const select = assignRow.createEl('select', { cls: 'speaker-attribution-select' });
 		select.createEl('option', { text: '— Skip / Unknown —', value: '' }).selected = true;
+
+		const bestGuess = this.bestGuesses.get(profile.speakerId);
 
 		for (const attendee of this.attendees) {
 			select.createEl('option', {
@@ -180,8 +187,60 @@ export class SpeakerAttributionModal extends Modal {
 			});
 		}
 
+		// Pre-select best guess if it has any confidence
+		if (bestGuess && bestGuess.confidence > 0) {
+			for (let i = 0; i < select.options.length; i++) {
+				if (select.options[i].value === bestGuess.attendeeName) {
+					select.options[i].selected = true;
+					this.pendingMappings.set(profile.speakerId, bestGuess.attendeeName);
+					break;
+				}
+			}
+			// Show confidence badge next to dropdown
+			const pct = Math.round(bestGuess.confidence * 100);
+			const badgeCls = pct >= 70 ? 'speaker-attribution-confidence-high'
+				: pct >= 40 ? 'speaker-attribution-confidence-mid'
+				: 'speaker-attribution-confidence-low';
+			assignRow.createEl('span', {
+				text: ` ${pct}% match`,
+				cls: `speaker-attribution-confidence ${badgeCls}`
+			});
+		}
+
 		select.addEventListener('change', () => {
 			this.pendingMappings.set(profile.speakerId, select.value);
+			// Clear any free-text entry when the dropdown is changed
+			this.freeTextNames.delete(profile.speakerId);
+		});
+
+		// Free-text input for names not yet in the dropdown
+		const newNameRow = row.createDiv({ cls: 'speaker-attribution-new-name-row' });
+		newNameRow.createEl('span', { text: 'or type a new name: ', cls: 'speaker-attribution-assign-label' });
+
+		// Build a datalist of all known candidates for autocomplete
+		const datalistId = `speaker-names-${profile.speakerId}`;
+		const datalist = newNameRow.createEl('datalist') as HTMLDataListElement;
+		datalist.id = datalistId;
+		for (const attendee of this.attendees) {
+			datalist.createEl('option', { value: attendee.displayName });
+		}
+
+		const newNameInput = newNameRow.createEl('input', {
+			cls: 'speaker-attribution-new-name-input',
+		} as DomElementInfo);
+		(newNameInput as HTMLInputElement).type = 'text';
+		(newNameInput as HTMLInputElement).placeholder = 'New name…';
+		(newNameInput as HTMLInputElement).setAttribute('list', datalistId);
+		newNameInput.addEventListener('input', () => {
+			const val = (newNameInput as HTMLInputElement).value.trim();
+			if (val) {
+				this.freeTextNames.set(profile.speakerId, val);
+				// Clear dropdown selection so free-text takes priority
+				select.value = '';
+				this.pendingMappings.set(profile.speakerId, '');
+			} else {
+				this.freeTextNames.delete(profile.speakerId);
+			}
 		});
 	}
 
@@ -221,14 +280,30 @@ export class SpeakerAttributionModal extends Modal {
 			}
 		}
 
-		// User-assigned mappings
+		// User-assigned mappings (dropdown or free-text)
 		for (const [speakerId, displayName] of this.pendingMappings.entries()) {
-			if (displayName) {
-				const attendee = this.attendees.find(a => a.displayName === displayName);
+			// Free-text takes priority over dropdown selection
+			const effectiveName = this.freeTextNames.get(speakerId) || displayName;
+			if (effectiveName) {
+				const attendee = this.attendees.find(a => a.displayName === effectiveName);
 				result.push({
 					speakerId,
-					attendeeName: displayName,
-					wikiLink: attendee?.wikiLink ?? displayName,
+					attendeeName: effectiveName,
+					wikiLink: attendee?.wikiLink ?? effectiveName,
+					confidence: 1.0,
+					autoDetected: false
+				});
+			}
+		}
+
+		// Pick up any free-text entries for speakers whose dropdown was never changed
+		for (const [speakerId, name] of this.freeTextNames.entries()) {
+			if (!result.some(r => r.speakerId === speakerId)) {
+				const attendee = this.attendees.find(a => a.displayName === name);
+				result.push({
+					speakerId,
+					attendeeName: name,
+					wikiLink: attendee?.wikiLink ?? name,
 					confidence: 1.0,
 					autoDetected: false
 				});

@@ -4,6 +4,8 @@ import { TeamsDownloadedCleaner } from './cleaner-downloaded';
 import { TeamsDocxCleaner } from './cleaner-docx';
 import { GoogleRecorderCleaner } from './cleaner-google-recorder';
 import { SimpleTranscriptCleaner } from './cleaner-simple';
+import { MacWhisperJsonCleaner } from './cleaner-macwhisper';
+import { WhisperFileMetaCleaner } from './cleaner-whisper-file';
 
 /**
  * Detects transcript format and selects appropriate cleaner
@@ -13,8 +15,13 @@ export class TranscriptDetector {
 
 	constructor() {
 		// Order matters! Check more specific formats first
+		// WhisperFileMetaCleaner must come before MacWhisperJsonCleaner — both parse JSON
+		// but the .whisper metadata format (speaker as object) is more specific than the
+		// flat MacWhisper JSON export (speaker as string).
 		// SimpleTranscriptCleaner should be last as it's the fallback
 		this.cleaners = [
+			new WhisperFileMetaCleaner(),
+			new MacWhisperJsonCleaner(),
 			new TeamsDirectPasteCleaner(),
 			new TeamsDownloadedCleaner(),
 			new TeamsDocxCleaner(),
