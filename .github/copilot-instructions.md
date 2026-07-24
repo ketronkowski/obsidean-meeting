@@ -114,7 +114,7 @@ After building: reload Obsidian with `Cmd+R` (no full restart needed).
 | Setting | Default | Notes |
 |---------|---------|-------|
 | `copilotCliPath` | `copilot` | Full path if not on PATH |
-| `model` | `claude-sonnet-4` | Passed to Copilot CLI |
+| `model` | `auto` | Passed to Copilot CLI as `--model` |
 | `meetingsFolder` | `Meetings` | Relative to vault root |
 | `dailyNotesFolder` | `Daily Notes` | Relative to vault root; daily-summary notes |
 | `peopleFolder` | `People` | People profile notes |

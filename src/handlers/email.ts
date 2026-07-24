@@ -6,6 +6,7 @@ import { StatusBarManager } from '../ui/status-bar';
 import { PeopleManager } from '../people-manager';
 import { parseEmailParticipants } from '../email-parser';
 import { cleanCopilotOutput } from '../output-cleaner';
+import { getSection, isSectionEmpty, replaceSection } from '../section-utils';
 
 export class EmailChainHandler {
 	private app: App;
@@ -180,53 +181,15 @@ export class EmailChainHandler {
 	// Section utilities
 	// ---------------------------------------------------------------------------
 
-	/**
-	 * Extract the content of a `# Heading` section.
-	 * Returns empty string if section is absent.
-	 */
 	extractSection(content: string, heading: string): string {
-		const headingIdx = content.indexOf(`# ${heading}`);
-		if (headingIdx === -1) return '';
-
-		const afterHeading = content.indexOf('\n', headingIdx);
-		if (afterHeading === -1) return '';
-
-		// Find the next top-level heading (# but not ##)
-		const nextHeadingMatch = /\n# [^#]/g;
-		nextHeadingMatch.lastIndex = afterHeading;
-		const nextMatch = nextHeadingMatch.exec(content);
-		const sectionEnd = nextMatch ? nextMatch.index : content.length;
-
-		return content.slice(afterHeading + 1, sectionEnd).trim();
+		return getSection(content, heading);
 	}
 
-	/**
-	 * Returns true if the named `# Heading` section is empty (no non-whitespace content).
-	 */
 	isSectionEmpty(content: string, heading: string): boolean {
-		return this.extractSection(content, heading).length === 0;
+		return isSectionEmpty(content, heading);
 	}
 
-	/**
-	 * Replace the body of a `# Heading` section with newBody.
-	 * If the section does not exist, the content is returned unchanged.
-	 */
 	replaceSection(content: string, heading: string, newBody: string): string {
-		const headingIdx = content.indexOf(`# ${heading}`);
-		if (headingIdx === -1) return content;
-
-		const afterHeading = content.indexOf('\n', headingIdx);
-		if (afterHeading === -1) return content;
-
-		const nextHeadingMatch = /\n# [^#]/g;
-		nextHeadingMatch.lastIndex = afterHeading;
-		const nextMatch = nextHeadingMatch.exec(content);
-		const sectionEnd = nextMatch ? nextMatch.index : content.length;
-
-		return (
-			content.slice(0, afterHeading + 1) +
-			'\n' + newBody + '\n\n' +
-			content.slice(sectionEnd)
-		);
+		return replaceSection(content, heading, newBody);
 	}
 }

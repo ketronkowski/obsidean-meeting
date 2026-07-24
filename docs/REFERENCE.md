@@ -354,7 +354,7 @@ Status emoji: ✅ done/closed · 🟢 in-progress · 🟡 review/testing · 🔴
 
 | Field | Default | Purpose |
 |-------|---------|---------|
-| `model` | `claude-sonnet-4` | Copilot model |
+| `model` | `auto` | Copilot model, passed as `--model` to every CLI spawn |
 | `copilotCliPath` | `copilot` | path to CLI binary |
 | `dailyNotesFolder` | `Daily Notes` | daily-note detection |
 | `meetingsFolder` | `Meetings` | meeting detection |

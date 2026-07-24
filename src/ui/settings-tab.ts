@@ -40,7 +40,7 @@ export interface MeetingProcessorSettings {
 }
 
 export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
-	model: 'claude-sonnet-4',
+	model: 'auto',
 	copilotCliPath: 'copilot', // Will be auto-detected or set by user
 	dailyNotesFolder: 'Daily Notes',
 	meetingsFolder: 'Meetings',
@@ -82,13 +82,13 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Model')
-			.setDesc('AI model to use for processing')
+			.setDesc('AI model to use for processing (passed to `copilot --model`)')
 			.addDropdown(dropdown => dropdown
-				.addOption('claude-sonnet-4', 'Claude Sonnet 4')
+				.addOption('auto', 'Auto (let Copilot pick)')
 				.addOption('claude-sonnet-4.5', 'Claude Sonnet 4.5')
-				.addOption('claude-haiku-4', 'Claude Haiku 4')
-				.addOption('gpt-4.1', 'GPT-4.1')
-				.addOption('gpt-5', 'GPT-5')
+				.addOption('claude-opus-4.5', 'Claude Opus 4.5')
+				.addOption('claude-haiku-4.5', 'Claude Haiku 4.5')
+				.addOption('gpt-5-mini', 'GPT-5 mini')
 				.setValue(this.plugin.settings.model)
 				.onChange(async (value) => {
 					this.plugin.settings.model = value;

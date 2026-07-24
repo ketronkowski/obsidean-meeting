@@ -56,6 +56,20 @@ export class CopilotClientManager {
 	}
 
 	/**
+	 * Build the CLI args array, prepending `--model <model>` when a model is
+	 * configured (settings.model defaults to 'auto', which the CLI itself
+	 * supports as "let Copilot pick automatically").
+	 */
+	private buildArgs(prompt: string): string[] {
+		const args: string[] = [];
+		if (this.settings.model) {
+			args.push('--model', this.settings.model);
+		}
+		args.push('-p', prompt);
+		return args;
+	}
+
+	/**
 	 * Use Copilot CLI directly for vision analysis
 	 * The CLI supports vision when files are referenced in the prompt
 	 */
@@ -73,7 +87,7 @@ export class CopilotClientManager {
 			const fullPrompt = `process the file [📷 ${imagePath}] to determine the names of people listed. Output ONLY a comma-separated list of full names with no other text.`;
 			
 			// Use non-interactive mode with -p flag
-			const process = spawn(cliPath, ['-p', fullPrompt], {
+			const process = spawn(cliPath, this.buildArgs(fullPrompt), {
 				stdio: ['pipe', 'pipe', 'pipe']
 			});
 			
@@ -127,7 +141,7 @@ export class CopilotClientManager {
 				fullPrompt = `${prompt}\n\n${refs}`;
 			}
 
-			const proc = spawn(cliPath, ['-p', fullPrompt], {
+			const proc = spawn(cliPath, this.buildArgs(fullPrompt), {
 				stdio: ['pipe', 'pipe', 'pipe']
 			});
 

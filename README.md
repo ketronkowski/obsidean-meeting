@@ -117,7 +117,7 @@ Notes matching the `dailyNotesFolder` daily-note filename pattern
 Go to Settings → Community Plugins → Meeting Processor
 
 ### AI Settings
-- **Model**: Select AI model (Claude Sonnet 4, Claude Sonnet 4.5, GPT-4.1, etc.)
+- **Model**: AI model passed to `copilot --model` (Auto, Claude Sonnet 4.5, Claude Opus 4.5, Claude Haiku 4.5, GPT-5 mini; default: `auto`)
 - **Copilot CLI Path**: Path to copilot executable (default: `copilot`)
 
 ### Processing Preferences

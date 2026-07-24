@@ -172,7 +172,7 @@ This modal is **only shown when voice identification is not available** or when 
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `model` | `claude-sonnet-4` | AI model passed to Copilot |
+| `model` | `auto` | AI model, passed as `copilot --model <value>` |
 | `copilotCliPath` | `copilot` | Absolute or relative path to `copilot` binary |
 | `meetingsFolder` | `Meetings` | Vault folder for meeting notes |
 | `dailyNotesFolder` | `Daily Notes` | Vault folder for daily-summary notes |
