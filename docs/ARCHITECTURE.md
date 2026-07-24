@@ -27,13 +27,19 @@ MeetingRouter.process()
         │                                         JiraKeyExtractor → checkbox updates
         │
         └── [general] ── GeneralMeetingHandler.process()
-                              │
+                              │  (inherited from BaseMeetingHandler)
                               ├── PeopleManager → find/create profiles
                               ├── CopilotClientManager.analyzeImageWithCLI() → attendee names
                               ├── TranscriptDetector.detectAndClean() → clean transcript
                               ├── CopilotClientManager.sendPrompt() → summary
                               └── SpeakerAttributionModal (if [Speaker N] labels found)
 ```
+
+`GeneralMeetingHandler` and `StandupMeetingHandler` both extend
+`BaseMeetingHandler` (`src/handlers/base-meeting-handler.ts`), which owns the
+entire attendee/transcript/summary pipeline shown above — the two subclasses
+differ only in their `process()` orchestration and a handful of
+template-method hook overrides (see below).
 
 ---
 
@@ -66,31 +72,85 @@ deleted along with the dependency; `queryJiraWithCLI()` and `sendVisionPrompt()`
 - Instantiates both handlers once and holds references
 - Stateless dispatch — no processing logic here
 
-### `GeneralMeetingHandler` (`src/handlers/general.ts`)
-Orchestrates the full general meeting pipeline:
-1. **Attendee extraction** — looks for `![[SCR-*.png]]` image references; calls vision API or falls back to content scanning
-2. **People profile management** — creates missing profiles in `peopleFolder`
-3. **Transcript cleaning** — skips if `## Copilot Summary` already has content
-4. **Speaker attribution** — opens `SpeakerAttributionModal` if `[Speaker N]` labels found
-5. **Summary generation** — calls Copilot with skill prompt; result is cleaned and inserted
+### `BaseMeetingHandler` (`src/handlers/base-meeting-handler.ts`)
+Shared abstract base class for `GeneralMeetingHandler` and `StandupMeetingHandler`,
+holding the ~85% of logic that used to be hand-duplicated between the two
+(prior to the C1/C2 refactor, `general.ts` was 1120 lines and `standup.ts`
+was 1320 lines with near-identical bodies). Owns:
+- Shared fields: `app`, `settings`, `copilotClient`, `skillLoader`,
+  `transcriptDetector`, `statusBar`, `peopleManager`, `voiceResolver`
+- `expandTranscriptEmbed`, `resolveSpeakers`, `hasCopilotSummary`,
+  `processAttendees`, `extractFromScreenshots`, `updateAttendeesSection`
+- `cleanTranscript`, `resolveTranscriptContent`
+- `hasUnifiedSummary`, `hasTranscript`, `generateSummary`,
+  `generateStandardSummary`, `generateEnhancedSummary`,
+  `generateTranscriptSummary`, `combineSummaries`, `updateSummarySections`
 
-### `StandupMeetingHandler` (`src/handlers/standup.ts`)
-Two modes based on transcript presence:
+Behavior that genuinely differs between the two meeting types is exposed as
+`protected` template-method hooks that each subclass overrides, e.g.:
+- `resolveNonEmbedTranscript` / `shouldUseMacWhisperSource` — general.ts falls
+  back to a MacWhisper transcript matched by meeting filename; standup.ts does not
+- `mergeSupplementalAttendees` — standup.ts merges in speaker names extracted
+  from a `.whisper` sentinel file; general.ts does not
+- `getAdditionalSpeakerCandidates` — general.ts offers voice-library speaker
+  candidates in the attribution modal; standup.ts does not
+- `shouldSkipSpeakerResolution` / `transformExpandedTranscript` — standup.ts
+  treats `.whisper`-sourced transcripts as having authoritative speaker names
+  and skips the manual attribution modal
+- `buildStandardSummaryPrompt`, `buildTranscriptSummaryPrompt`,
+  `buildCombineSummariesPrompt` — standup-specific prompt wording (yesterday/
+  today/blockers framing) vs. general-purpose summary prompts
+
+### `GeneralMeetingHandler` (`src/handlers/general.ts`, 103 lines)
+Thin subclass: its own `process()` calls the inherited attendee → transcript
+→ speaker-resolution → clean → summary pipeline, plus the general-only hook
+overrides above.
+
+### `StandupMeetingHandler` (`src/handlers/standup.ts`, 418 lines)
+Two modes based on transcript presence, decided by `detectMode()`:
 
 **Pre-meeting** (transcript empty/short):
-1. Query JIRA active sprint → format → insert `## JIRA` section
-2. Populate expected attendees from config or previous standups
+1. Query JIRA active sprint → format → insert `# JIRA` section (via
+   `insertJiraSection`, built on the shared `upsertSection` utility)
 
 **Post-meeting** (transcript present):
-1. Same attendee + transcript + summary pipeline as general meeting
-2. `JiraKeyExtractor.extractKeys()` scans transcript and summary for `GLCP-NNNNN` patterns
-3. Matched keys have their checkboxes ticked and context notes appended in the JIRA section
+1. Same inherited attendee + transcript + summary pipeline as general meeting
+   (with the standup-specific hook overrides noted above)
+2. `JiraKeyExtractor.extractKeys()` scans transcript and summary for
+   `GLCP-NNNNN` patterns
+3. Matched keys have their checkboxes ticked and context notes appended in
+   the JIRA section (`extractJiraUpdates`)
 
 ### `SkillLoader` (`src/skill-loader.ts`)
-- Reads all `*.md` files from `{pluginDir}/skills/` at startup via Obsidian's `adapter.read()`
+- Reads only the 3 active skill files (`summary-generation`, `email-summary`,
+  `daily-summary`) from `{pluginDir}/skills/` at startup via Obsidian's
+  `adapter.read()`. The 6 unused legacy skills (`meeting-router`,
+  `general-meeting`, `standup-meeting`, `transcript-cleanup`,
+  `jira-population`, `attendee-extraction`) live in `docs/legacy-skills/`
+  for reference and are not loaded.
 - Parses each file into a `Skill` object: `{ name, purpose, content, sections: Map<string,string> }`
 - Sections are parsed by `## Heading` boundaries
-- Handlers call `skillLoader.getSkill('general-meeting')` and inject `skill.content` into prompts
+- `BaseMeetingHandler` calls `skillLoader.getSkill('summary-generation')`
+  and injects `skill.content` into summary prompts
+
+### `section-utils.ts` (`src/section-utils.ts`)
+Shared, heading-level-tolerant section utility used by all four handlers
+(`general.ts`/`standup.ts`/`email.ts` via `BaseMeetingHandler` or directly,
+plus `daily-summary.ts`) — replaces what used to be ~4 hand-rolled,
+near-duplicate `indexOf`/regex section-parsing implementations:
+
+| Function | Purpose |
+|----------|---------|
+| `getSection(content, heading, level?)` | Extract the body of a `#`/`##` heading section (default level 1) |
+| `isSectionEmpty(content, heading, level?)` | True if the section has no non-whitespace content |
+| `replaceSection(content, heading, newBody, level?)` | Replace an existing section's body in-place |
+| `upsertSection(content, heading, newBody, opts?)` | Replace if present; otherwise insert (`insertAfterHeading`/`insertBeforeHeading`) or append to end |
+
+Heading lookups are anchored to line boundaries (not a plain substring
+search) so a level-1 lookup for `# Summary` cannot false-positive match
+inside an unrelated `## Summary` sub-heading. `daily-summary.ts` passes
+`level: 2` since daily notes use `##` sections; the meeting handlers use
+the default level 1.
 
 ### JIRA Layer (`src/jira/`)
 
@@ -194,17 +254,17 @@ PeopleManager.findOrCreate(names)
     → ["[[John Smith]]", "[[Jane Doe]]", "[[Alice Johnson]]"]
     │
     ▼
-Update ## Attendees section in file
+Update # Attendees section in file
     │
     ▼
-[if transcript present and no Copilot Summary]
+[if transcript present and no # Copilot Summary]
 TranscriptDetector.detectAndClean(transcriptContent)
     → { cleaner: "TeamsDirectPaste", cleaned: "..." }
     │
     ├── [Speaker N] found → SpeakerAttributionModal → user maps speakers
     │
     ▼
-Update ## Transcript section with cleaned text
+Update # Transcript section with cleaned text
     │
     ▼
 sendPrompt(summarySkill + cleanedTranscript)
@@ -215,7 +275,7 @@ cleanCopilotOutput(raw)
     → clean markdown summary
     │
     ▼
-Update ## Summary section in file
+Update # Summary section in file
 ```
 
 ---
@@ -243,7 +303,7 @@ JiraFormatter.createJiraSection(grouped)
     → markdown string with checkboxes, icons, status emoji, links
     │
     ▼
-Insert/replace ## JIRA section in file
+Insert/replace # JIRA section in file
 ```
 
 ---
@@ -255,17 +315,20 @@ main.ts
  ├── src/ui/settings-tab.ts       (MeetingProcessorSettings, DEFAULT_SETTINGS)
  ├── src/copilot-client.ts        → child_process
  ├── src/meeting-router.ts
- │    ├── src/handlers/general.ts
- │    │    ├── src/copilot-client.ts
- │    │    ├── src/skill-loader.ts
- │    │    ├── src/transcript/ (detector + all cleaners)
- │    │    ├── src/people-manager.ts
- │    │    ├── src/speaker-resolver.ts
- │    │    ├── src/output-cleaner.ts
- │    │    └── src/ui/speaker-attribution-modal.ts
- │    └── src/handlers/standup.ts
- │         ├── src/jira/ (manager, api-client, formatter, extractor, client)
- │         └── (same as general.ts)
+ │    ├── src/handlers/general.ts       (GeneralMeetingHandler, thin subclass)
+ │    ├── src/handlers/standup.ts       (StandupMeetingHandler, thin subclass)
+ │    └── src/handlers/base-meeting-handler.ts   (BaseMeetingHandler, shared base)
+ │         ├── src/section-utils.ts
+ │         ├── src/copilot-client.ts
+ │         ├── src/skill-loader.ts
+ │         ├── src/transcript/ (detector + all cleaners)
+ │         ├── src/people-manager.ts
+ │         ├── src/speaker-resolver.ts
+ │         ├── src/voice-speaker-resolver.ts
+ │         ├── src/output-cleaner.ts
+ │         └── src/ui/speaker-attribution-modal.ts
+ │    (standup.ts additionally depends on)
+ │         └── src/jira/ (manager, api-client, formatter, extractor, client)
  ├── src/validators.ts
  ├── src/skill-loader.ts
  ├── src/ui/status-bar.ts

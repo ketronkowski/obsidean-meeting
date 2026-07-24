@@ -167,9 +167,11 @@ names; vault copies may be stale.
 
 ## 5. Section-heading contract (what the plugin reads & writes)
 
-**The plugin uses level-1 (`#`) headings**, matched with regexes like
-`# Transcript\s*\n[\s\S]*?(?=\n# [^#]|$)`. (Note: the root README and several
-`skills/*.md` still say `##` — that is stale; the code is authoritative.)
+**The plugin uses level-1 (`#`) headings**, extracted/replaced via the shared
+`src/section-utils.ts` utility (`getSection`/`isSectionEmpty`/`replaceSection`/
+`upsertSection`) rather than ad-hoc regexes duplicated per-handler. (Note: the
+root README and several `docs/legacy-skills/*.md` still say `##` in places —
+that is stale; the code is authoritative.)
 
 | Heading | Read | Written | Notes |
 |---------|------|---------|-------|
@@ -187,6 +189,17 @@ Daily notes use level-2 `## Daily Summary` and `## Short Conversations and Notes
 
 ## 6. Meeting workflows (step-by-step)
 
+`GeneralMeetingHandler` and `StandupMeetingHandler` both extend
+`BaseMeetingHandler` (`src/handlers/base-meeting-handler.ts`), which owns the
+shared attendee/transcript/speaker/summary pipeline. Method names below
+(`processAttendees`, `expandTranscriptEmbed`, `resolveSpeakers`,
+`cleanTranscript`, `generateSummary`, etc.) live in the base class unless
+noted otherwise; each subclass only adds its own `process()` orchestration
+plus a small set of template-method hook overrides for behavior that
+genuinely differs (MacWhisper-filename fallback and voice-library candidates
+for general meetings; `.whisper`-sentinel skip and whisper-attendee merge for
+standups).
+
 ### 6.1 General meeting (`GeneralMeetingHandler.process`)
 1. Read note; record whether a real `# Copilot Summary` exists.
 2. **Attendees** (`processAttendees`): screenshots → vision; else content scan.
@@ -198,17 +211,17 @@ Daily notes use level-2 `## Daily Summary` and `## Short Conversations and Notes
 
 ### 6.2 Standup — pre-meeting (`detectMode` → transcript empty / < 50 chars & no file ref)
 1. `JiraManager.queryAndFormatSprint(boardId, projectKey, team)` → formatted `# JIRA` section.
-2. Insert/replace `# JIRA` (after `# Attendees`, else after frontmatter).
+2. Insert/replace `# JIRA` (after `# Attendees`, else after frontmatter) via `insertJiraSection`, built on the shared `upsertSection` utility.
 
 ### 6.3 Standup — post-meeting (transcript has content or a file reference)
 1. `peekScreenshotAttendees` (read-only) to seed the voice modal's candidate list.
 2. **Voice ID** (before attendees/embed).
-3. `processAttendees` (screenshots first, then merge `.whisper` speakers).
+3. `processAttendees` (screenshots first, then merge `.whisper` speakers via the `mergeSupplementalAttendees` hook).
 4. `expandTranscriptEmbed`.
 5. `resolveSpeakers`.
 6. `cleanTranscript` (unless `# Copilot Summary`).
 7. `generateSummary`.
-8. `extractJiraUpdates`: find `GLCP-####` mentions in the note, tick their checkboxes in `# JIRA`, and append context.
+8. `extractJiraUpdates` (standup-only): find `GLCP-####` mentions in the note, tick their checkboxes in `# JIRA`, and append context.
 
 ### 6.4 Summary generation detail
 Both handlers branch:
@@ -416,11 +429,13 @@ Daemon: `cd ~/git/whisper-speaker-id && .venv/bin/pytest -q` (37 tests across
 | Area | Files |
 |------|-------|
 | Entry / dispatch | `main.ts`, `src/meeting-router.ts`, `src/validators.ts` |
-| Handlers | `src/handlers/{general,standup,email,daily-summary}.ts` |
+| Handlers | `src/handlers/base-meeting-handler.ts` (shared base), `src/handlers/{general,standup,email,daily-summary}.ts` |
+| Section utilities | `src/section-utils.ts` |
 | Transcript | `src/transcript/{types,detector,index}.ts`, `cleaner-*.ts` (7) |
 | Voice | `src/voice-analysis-{client,types}.ts`, `src/voice-speaker-resolver.ts`, `src/ui/voice-speaker-attribution-modal.ts` |
 | Speakers (text) | `src/speaker-resolver.ts`, `src/ui/speaker-attribution-modal.ts` |
-| AI / skills | `src/copilot-client.ts`, `src/skill-loader.ts`, `src/output-cleaner.ts`, `skills/*.md` |
+| AI / skills | `src/copilot-client.ts`, `src/skill-loader.ts`, `src/output-cleaner.ts`, `skills/*.md` (3 active), `docs/legacy-skills/*.md` (6 unused, kept for reference) |
 | People / email | `src/people-manager.ts`, `src/email-parser.ts` |
 | JIRA | `src/jira/{api-client,client,extractor,formatter,manager}.ts` |
 | UI | `src/ui/{settings-tab,status-bar,copilot-working-modal}.ts` |
+

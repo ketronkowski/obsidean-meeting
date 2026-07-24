@@ -27,23 +27,21 @@ obsidean-meeting/
 ├── styles.css                        # CSS for modals (CopilotWorkingModal, SpeakerAttributionModal, VoiceSpeakerAttributionModal)
 ├── versions.json                     # Obsidian version compatibility map
 ├── docs/                             # Extended architecture and implementation docs
+│   ├── REFERENCE.md                  # Single-source architecture/workflow/format reference (start here)
 │   ├── ARCHITECTURE.md
-│   └── IMPLEMENTATION.md
-├── skills/                           # Editable markdown files that define AI behaviour
-│   ├── meeting-router.md             # How to classify standup vs. general
-│   ├── general-meeting.md            # General meeting workflow
-│   ├── standup-meeting.md            # Standup workflow (pre/post-meeting modes)
-│   ├── transcript-cleanup.md         # Transcript format details + cleaning rules
-│   ├── summary-generation.md         # Summary output format
-│   ├── jira-population.md            # JIRA section format + icons
-│   ├── attendee-extraction.md        # Screenshot vision + profile creation rules
-│   └── email-summary.md              # Email chain summary prompt (discussed/decisions/actions/questions)
+│   ├── IMPLEMENTATION.md
+│   └── legacy-skills/                # 6 unused skill files, relabeled + not loaded (kept for reference)
+├── skills/                           # Editable markdown files that define AI behaviour (only 3 are loaded)
+│   ├── summary-generation.md         # Summary output format (used by general + standup meetings)
+│   ├── email-summary.md              # Email chain summary prompt (discussed/decisions/actions/questions)
+│   └── daily-summary.md              # Daily note summary prompt
 └── src/
     ├── copilot-client.ts             # CopilotClientManager — all AI/CLI calls live here
     ├── meeting-router.ts             # MeetingRouter — dispatches to meeting or email handler
     ├── validators.ts                 # validateMeetingFile(), validateEmailNote(), detectMeetingType(), detectTeam()
     ├── email-parser.ts               # parseEmailParticipants() — From/To/Cc header extraction, HPE filter
-    ├── skill-loader.ts               # SkillLoader — reads skills/ dir, parses sections
+    ├── section-utils.ts              # getSection/isSectionEmpty/replaceSection/upsertSection — shared heading-level-tolerant section utility
+    ├── skill-loader.ts               # SkillLoader — reads skills/ dir (3 active skills only), parses sections
     ├── people-manager.ts             # PeopleManager — create/find People profile notes; createProfileWithBody()
     ├── speaker-resolver.ts           # SpeakerResolver — map [Speaker N] → real names
     ├── output-cleaner.ts             # cleanCopilotOutput() — strip CLI trace artifacts
@@ -51,9 +49,11 @@ obsidean-meeting/
     ├── voice-analysis-client.ts      # VoiceAnalysisClient — HTTP daemon + CLI subprocess fallback
     ├── voice-speaker-resolver.ts     # VoiceSpeakerResolver — shared logic for both handlers
     ├── handlers/
-    │   ├── general.ts                # GeneralMeetingHandler — attendees + transcript + summary
-    │   ├── standup.ts                # StandupMeetingHandler — JIRA + attendees + summary
-    │   └── email.ts                  # EmailChainHandler — participants + summary for email notes
+    │   ├── base-meeting-handler.ts   # BaseMeetingHandler — shared attendee/transcript/speaker/summary pipeline (~85% of general+standup logic)
+    │   ├── general.ts                # GeneralMeetingHandler — thin subclass of BaseMeetingHandler (103 lines)
+    │   ├── standup.ts                # StandupMeetingHandler — subclass of BaseMeetingHandler + JIRA pre/post logic (418 lines)
+    │   ├── email.ts                  # EmailChainHandler — participants + summary for email notes
+    │   └── daily-summary.ts          # DailySummaryHandler — aggregates linked meetings/notes into a daily `## Daily Summary`
     ├── jira/
     │   ├── api-client.ts             # JiraApiClient — direct REST API, Basic Auth
     │   ├── client.ts                 # JiraIssue type + groupIssuesByAssignee()
@@ -84,11 +84,12 @@ obsidean-meeting/
         ├── helpers/
         │   ├── obsidian-mock.ts      # HTMLElement polyfills for jsdom
         │   └── mock-daemon.ts        # Node http.createServer test helper
-        ├── voice-analysis-client.test.ts           # 9 tests for VoiceAnalysisClient
-        ├── voice-speaker-attribution-modal.test.ts # 10 tests for VoiceSpeakerAttributionModal
+        ├── voice-analysis-client.test.ts           # 12 tests for VoiceAnalysisClient
+        ├── voice-speaker-attribution-modal.test.ts # 14 tests for VoiceSpeakerAttributionModal (incl. audio playback)
         ├── upsert-summary-section.test.ts           # 7 tests for upsertSummarySection
-        ├── email-parser.test.ts                     # 12 tests for email-parser (uses real fixture)
-        └── email-handler.test.ts                    # 9 tests for EmailChainHandler section utilities + preserve-existing
+        ├── email-parser.test.ts                     # 13 tests for email-parser (uses real fixture)
+        ├── email-handler.test.ts                    # 8 tests for EmailChainHandler section utilities + preserve-existing
+        └── daily-summary-handler.test.ts             # 21 tests for DailySummaryHandler (section utils, file discovery, summary extraction)
 ```
 
 ---
@@ -236,32 +237,31 @@ When "Process Meeting" is invoked on a non-meeting file, the plugin falls back t
 
 ---
 
-### General Meeting Workflow
-1. Pre-extract screenshot attendees (read-only, seeds voice modal candidate list)
-2. **Voice speaker identification** — if `.whisper` embed present: call daemon or CLI, show `VoiceSpeakerAttributionModal`, write names to `.whisper`
-3. Extract attendees (vision from `![[SCR-*.png]]` images, merge `.whisper` speakers, or content scan)
-4. Create/link People profiles for each attendee
-5. Update `## Attendees` section with wiki-links
-6. Expand `![[*.whisper]]` embed to inline transcript
-7. Clean transcript (skip if `## Copilot Summary` already has content)
-8. Generate AI summary → insert into `## Summary` section
+### General Meeting Workflow (`GeneralMeetingHandler`, inherits from `BaseMeetingHandler`)
+1. Extract attendees (vision from `![[SCR-*.png]]` images, or content scan)
+2. Create/link People profiles for each attendee
+3. Update `# Attendees` section with wiki-links
+4. **Voice speaker identification** — if `.whisper` embed/auto-found file present and `voiceServiceEnabled`: call daemon or CLI, show `VoiceSpeakerAttributionModal`, write names to `.whisper`
+5. Expand `![[*.whisper]]` embed (or auto-found MacWhisper file matched by meeting name) to inline transcript
+6. Resolve speaker labels (`[Speaker N]` → real names via text heuristics, skipped if `<!-- whisper-source -->` sentinel present)
+7. Clean transcript (skip if `# Copilot Summary` already has content)
+8. Generate AI summary → insert into `# Summary` section
 
 ### Standup — Pre-Meeting Mode (transcript section empty / < 50 chars)
 1. Query JIRA: active sprint issues for the team's board
 2. Group by assignee, format with icons + status emoji
-3. Insert formatted `## JIRA` section into the note
-4. Populate expected attendees
+3. Insert/replace formatted `# JIRA` section into the note (after `# Attendees`, else after frontmatter, else at top)
 
-### Standup — Post-Meeting Mode (transcript section has content)
+### Standup — Post-Meeting Mode (transcript section has content), inherits from `BaseMeetingHandler`
 1. Pre-extract screenshot attendees (read-only, seeds voice modal candidate list)
-2. **Voice speaker identification** — if `.whisper` embed present: call daemon or CLI, show modal, write names to `.whisper`
+2. **Voice speaker identification** — if `.whisper` embed present and `voiceServiceEnabled`: call daemon or CLI, show modal, write names to `.whisper`
 3. Process attendees (screenshots first, then `.whisper` speakers merged in)
 4. Expand `![[*.whisper]]` embed to inline transcript
-5. Resolve speaker labels (`[Speaker N]` → real names via text heuristics, only if needed)
-6. Clean transcript (skip if `## Copilot Summary` exists)
+5. Resolve speaker labels (`[Speaker N]` → real names via text heuristics, skipped if `.whisper`-sourced)
+6. Clean transcript (skip if `# Copilot Summary` exists)
 7. Generate summary
 8. Extract JIRA keys mentioned in transcript/summary
-9. Check boxes for mentioned keys in `## JIRA` section
+9. Check boxes for mentioned keys in `# JIRA` section
 10. Append context notes to checked items
 
 ---
@@ -297,7 +297,7 @@ This means the running plugin IS the repository. No copy step needed. The symlin
 
 ## Testing
 
-### Jest unit tests (47 tests)
+### Jest unit tests (75 tests)
 
 ```bash
 cd ~/git/obsidean-meeting
@@ -305,11 +305,12 @@ npm test
 ```
 
 Tests cover:
-- `VoiceAnalysisClient` — HTTP daemon calls, CLI fallback, spawn error handling (9 tests)
-- `VoiceSpeakerAttributionModal` — auto-bypass, apply/close, dropdown optgroups, datalist ordering, attendee badge (10 tests)
+- `VoiceAnalysisClient` — HTTP daemon calls, CLI fallback, spawn error handling (12 tests)
+- `VoiceSpeakerAttributionModal` — auto-bypass, apply/close, dropdown optgroups, datalist ordering, attendee badge, audio playback (14 tests)
 - `upsertSummarySection` — last section, middle section, insert-before-Notes, append, no-duplicate (7 tests)
-- `email-parser` — HPE filtering, deduplication, group exclusion, name format, real fixture (12 tests)
-- `EmailChainHandler` — section utilities (extract/isEmpty/replace), preserve-existing logic (9 tests)
+- `email-parser` — HPE filtering, deduplication, group exclusion, name format, real fixture (13 tests)
+- `EmailChainHandler` — section utilities (extract/isEmpty/replace), preserve-existing logic (8 tests)
+- `DailySummaryHandler` — section utilities, linked-file discovery, summary extraction fallback chain (21 tests)
 
 **Jest environment notes:**
 - Modal tests require `@jest-environment jsdom` docblock
@@ -338,7 +339,7 @@ For email chain notes:
 |---------|-------------|-----|
 | "Copilot CLI not found" | Wrong `copilotCliPath` | Set full path in settings: `which copilot` |
 | JIRA section not populating | Missing credentials | Add email + API token in settings |
-| Transcript not cleaned | `## Copilot Summary` already has content | Expected — by design, existing summary is preserved |
+| Transcript not cleaned | `# Copilot Summary` already has content | Expected — by design, existing summary is preserved |
 | Vision extraction fails | Image path not found in vault | Verify `![[SCR-...]]` reference and media folder |
 | `[Speaker N]` in transcript | Whisper-generated transcript | Speaker attribution modal will appear for manual mapping |
 | Modal stays open indefinitely | Copilot CLI process hung | Force-quit Obsidian; check CLI auth with `copilot auth status` |

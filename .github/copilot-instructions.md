@@ -25,8 +25,12 @@ MeetingProcessorPlugin (main.ts)
 ├── SkillLoader                Reads skills/*.md files at startup; injects into prompts
 │
 ├── MeetingRouter              Classifies meeting type and dispatches
-│   ├── GeneralMeetingHandler  Attendees → transcript cleaning → summary
-│   └── StandupMeetingHandler  JIRA (pre-meeting) or attendees+summary+JIRA-update (post)
+│   ├── BaseMeetingHandler     Shared attendees → transcript → speakers → summary pipeline
+│   ├── GeneralMeetingHandler  Thin subclass of BaseMeetingHandler
+│   └── StandupMeetingHandler  Subclass of BaseMeetingHandler + JIRA pre/post logic
+│
+├── section-utils.ts           Shared heading-level-tolerant section utility
+│   └── getSection/isSectionEmpty/replaceSection/upsertSection (used by all handlers, incl. daily-summary.ts at level 2)
 │
 ├── JIRA layer
 │   ├── JiraApiClient          Direct REST API calls (primary path)
@@ -90,8 +94,8 @@ skill file has a `## Purpose` section and task-specific sections.
 - Otherwise → **general**
 
 **Standup mode detection**:
-- `## Transcript` section empty or < 50 chars → **pre-meeting** (populate JIRA)
-- `## Transcript` section has content → **post-meeting** (process + update JIRA)
+- `# Transcript` section empty or < 50 chars → **pre-meeting** (populate JIRA)
+- `# Transcript` section has content → **post-meeting** (process + update JIRA)
 
 ---
 
@@ -144,8 +148,10 @@ After building: reload Obsidian with `Cmd+R` (no full restart needed).
 | `src/copilot-client.ts` | `sendPrompt`, `analyzeImageWithCLI`, modal management |
 | `src/meeting-router.ts` | Dispatch to general or standup handler |
 | `src/validators.ts` | File validation, meeting type/team detection |
-| `src/handlers/general.ts` | Full general meeting workflow |
-| `src/handlers/standup.ts` | Standup pre/post-meeting workflow |
+| `src/handlers/base-meeting-handler.ts` | Shared attendee/transcript/speaker/summary pipeline |
+| `src/handlers/general.ts` | Thin general-meeting subclass (103 lines) |
+| `src/handlers/standup.ts` | Standup subclass: pre/post-meeting JIRA logic (418 lines) |
+| `src/section-utils.ts` | getSection/isSectionEmpty/replaceSection/upsertSection |
 | `src/jira/api-client.ts` | JIRA REST API, board sprint queries |
 | `src/jira/formatter.ts` | Issue type icons + status emoji |
 | `src/jira/extractor.ts` | Regex extract JIRA keys; checkbox + note updates |
