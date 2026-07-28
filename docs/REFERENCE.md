@@ -298,6 +298,17 @@ calls `forgetSpeaker()` (`DELETE /speakers/{name}`, or the `forget-speaker` CLI 
 fallback) for each, with a summary `Notice`. Cancelling the combined confirm aborts the
 whole Apply action.
 
+A live **"Applying N of M speakers"** label sits next to the Apply button (`voice-apply-summary`,
+`updateApplySummary()`), recomputed from how many rows currently have a non-blank `pending`
+value. It's kept in sync via a single delegated `change`/`input` listener on the modal's
+`contentEl` (covers dropdown selections, Skip checkboxes, and new-name text input across
+every row without wiring a call into each individual handler), plus an explicit call at the
+end of `skipAllRows()` since its programmatically-dispatched `change` events don't set
+`bubbles: true` and so wouldn't otherwise reach the delegated listener. This makes it always
+visually verifiable exactly how many name assignments (and thus voice samples) Apply will
+send — added after a case where a user believed 2 rows were resolved (one Auto, one
+Confirm not skipped) but the console logs showed only 1 assignment actually reached Apply.
+
 The `<!-- whisper-source -->` sentinel (§4.4/§6.1) is written whenever the transcript came
 from a `.whisper` file, **whether via an explicit `![[...]].whisper]]` embed or an
 auto-found-by-meeting-filename match** (no embed present in the note) — both paths pass the

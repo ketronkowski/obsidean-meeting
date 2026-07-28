@@ -829,5 +829,41 @@ describe('VoiceSpeakerAttributionModal.show()', () => {
 			// Still disabled (Skip not checked for row b) — must not be selected.
 			expect(wipeCbB.checked).toBe(false);
 		});
+
+		test('Apply summary reflects live assignment count and updates as rows change', () => {
+			const response = {
+				speakers: [
+					{ speakerUuid: 'uuid-a', displayName: 'Speaker 1', bestMatch: 'Alice Smith', score: 0.9, action: 'auto' as const },
+					{ speakerUuid: 'uuid-b', displayName: 'Speaker 2', bestMatch: 'Bob Jones', score: 0.78, action: 'confirm' as const },
+					{ speakerUuid: 'uuid-c', displayName: 'Speaker 3', bestMatch: null, score: 0.2, action: 'skip' as const },
+				],
+				knownSpeakers: ['Alice Smith', 'Bob Jones'],
+			};
+			const modal = new VoiceSpeakerAttributionModal(mockApp, response, [], () => {});
+			modal.onOpen();
+			const contentEl = (modal as any).contentEl as HTMLElement;
+
+			const summary = contentEl.querySelector('.voice-apply-summary') as HTMLElement;
+			expect(summary).not.toBeNull();
+			// Auto (bestMatch prefilled) + Confirm (bestMatch prefilled) = 2 of 3.
+			expect(summary.textContent).toBe('Applying 2 of 3 speakers');
+
+			// Checking Skip on the confirm row drops the count to 1.
+			const skipCb = (modal as any).skipCheckboxEls.get('uuid-b') as HTMLInputElement;
+			skipCb.checked = true;
+			skipCb.dispatchEvent(new Event('change', { bubbles: true }));
+			expect(summary.textContent).toBe('Applying 1 of 3 speakers');
+
+			// Typing a name for the unresolved row brings it back up to 2.
+			const input = (modal as any).inputEls.get('uuid-c') as HTMLInputElement;
+			input.value = 'Carol White';
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+			expect(summary.textContent).toBe('Applying 2 of 3 speakers');
+
+			// skipAllRows() doesn't dispatch bubbling events for every row, but
+			// still updates the summary explicitly.
+			(modal as any).skipAllRows();
+			expect(summary.textContent).toBe('Applying 0 of 3 speakers');
+		});
 	});
 });

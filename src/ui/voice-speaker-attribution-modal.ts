@@ -58,6 +58,14 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	private clipCache: Map<string, string> = new Map(); // speakerUuid -> local clip path
 	private blobUrlCache: Map<string, string> = new Map(); // speakerUuid -> blob: object URL
 	private playingUuid: string | null = null;
+
+	// Live "Applying N of M speakers" label shown next to Apply, kept in sync
+	// with `pending` via a delegated change/input listener on contentEl —
+	// see updateApplySummary(). Exists so it's always visually verifiable
+	// exactly how many name assignments (and thus voice samples) Apply will
+	// actually send, rather than having to infer it from console logs after
+	// the fact (a source of confusion previously).
+	private applySummaryEl: HTMLElement | null = null;
 	private playButtons: Map<string, HTMLButtonElement> = new Map();
 
 	constructor(
@@ -106,6 +114,13 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		if (skipSpeakers.length > 0) this.renderSkipSection(contentEl, skipSpeakers);
 
 		this.renderButtons(contentEl);
+
+		// Delegated listener: any select/checkbox `change` or new-name-input
+		// `input` event anywhere in the modal bubbles up here, so the summary
+		// stays accurate without wiring a call into every individual handler.
+		contentEl.addEventListener('change', () => this.updateApplySummary());
+		contentEl.addEventListener('input', () => this.updateApplySummary());
+		this.updateApplySummary();
 	}
 
 	// ---------------------------------------------------------------------------
@@ -553,8 +568,26 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	private renderButtons(container: HTMLElement) {
 		const row = container.createDiv({ cls: 'voice-buttons' });
 
+		this.applySummaryEl = row.createEl('span', { cls: 'voice-apply-summary' });
+
 		const applyBtn = row.createEl('button', { text: 'Apply', cls: 'mod-cta' });
 		applyBtn.addEventListener('click', () => { this.applyAndClose(); });
+	}
+
+	/**
+	 * Recomputes and displays how many speakers currently have a non-blank
+	 * name in `pending` (i.e. exactly what Apply will send to `applyNames`/
+	 * `saveSamples`) out of the total speaker count, e.g. "Applying 2 of 6
+	 * speakers". Kept live via delegated change/input listeners in onOpen()
+	 * plus explicit calls from skipAllRows(), so it's always trustworthy —
+	 * added after a case where the user believed 2 rows were resolved but
+	 * only 1 name assignment actually reached Apply.
+	 */
+	private updateApplySummary() {
+		if (!this.applySummaryEl) return;
+		const total = this.response.speakers.length;
+		const assigned = [...this.pending.values()].filter(name => name.trim().length > 0).length;
+		this.applySummaryEl.textContent = `Applying ${assigned} of ${total} speaker${total !== 1 ? 's' : ''}`;
 	}
 
 	/**
@@ -583,6 +616,10 @@ export class VoiceSpeakerAttributionModal extends Modal {
 				if (input) input.value = '';
 			}
 		}
+		// The dispatched `change` events above don't bubble (default Event
+		// options), so the delegated listener in onOpen() won't catch them —
+		// update the summary explicitly instead.
+		this.updateApplySummary();
 	}
 
 	/**
