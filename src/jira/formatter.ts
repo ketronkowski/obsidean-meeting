@@ -85,13 +85,24 @@ export class JiraFormatter {
 	}
 
 	/**
+	 * Build the legend explaining the issue-type icons and status emoji used below
+	 */
+	private buildKey(): string {
+		return [
+			'**Key:** 📋 Story · 🐛 Bug · ☑️ Task · 🎯 Epic · 📝 Subtask · 📌 Other  |  ✅ Done · 🟢 In Progress · 🟡 In Review · 🔴 Blocked · 🔵 To Do / Other',
+			'',
+		].join('\n');
+	}
+
+	/**
 	 * Create complete JIRA section for standup
 	 */
 	createJiraSection(grouped: JiraIssuesByAssignee): string {
 		const formattedIssues = this.formatByAssignee(grouped);
-		
+
 		return `# JIRA
 
+${this.buildKey()}
 ${formattedIssues}`;
 	}
 }

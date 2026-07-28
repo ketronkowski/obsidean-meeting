@@ -24,6 +24,8 @@ export interface MeetingProcessorSettings {
 	jiraBaseUrl: string;
 	greenBoardId: string;
 	jiraProjectKey: string;
+	jiraCliEnabled: boolean;
+	jiraCliPath: string;
 	
 	// Meeting Detection
 	standupKeywords: string;
@@ -55,6 +57,8 @@ export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	jiraBaseUrl: 'https://hpe.atlassian.net',
 	greenBoardId: '214',
 	jiraProjectKey: 'GLCP',
+	jiraCliEnabled: true,
+	jiraCliPath: 'jira',
 	standupKeywords: 'Green Standup',
 	filenamePattern: 'YYYY-MM-DD - *.md',
 	voiceServiceEnabled: true,
@@ -257,6 +261,29 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.jiraProjectKey)
 				.onChange(async (value) => {
 					this.plugin.settings.jiraProjectKey = value;
+					await this.plugin.saveSettings();
+				}));
+
+		containerEl.createEl('h3', { text: 'CLI Integration' });
+
+		new Setting(containerEl)
+			.setName('Prefer JIRA CLI')
+			.setDesc('Use the jira CLI (ankitpokhrel/jira-cli) as the preferred way to query sprint issues, falling back to the direct REST API on failure. The CLI auth token is captured from your shell environment (JIRA_API_TOKEN), not from the JIRA API Token field above.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.jiraCliEnabled)
+				.onChange(async (value) => {
+					this.plugin.settings.jiraCliEnabled = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('JIRA CLI Path')
+			.setDesc('Path to jira executable (leave default or use full path like /opt/homebrew/bin/jira)')
+			.addText(text => text
+				.setPlaceholder('jira')
+				.setValue(this.plugin.settings.jiraCliPath)
+				.onChange(async (value) => {
+					this.plugin.settings.jiraCliPath = value || 'jira';
 					await this.plugin.saveSettings();
 				}));
 
