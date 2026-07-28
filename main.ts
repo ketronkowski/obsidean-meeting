@@ -5,6 +5,8 @@ import { MeetingRouter } from './src/meeting-router';
 import { validateMeetingFile, validateEmailNote, validateDailyNote } from './src/validators';
 import { StatusBarManager } from './src/ui/status-bar';
 import { SkillLoader } from './src/skill-loader';
+import { PeopleManager } from './src/people-manager';
+import { SchedulePasteModal } from './src/ui/schedule-paste-modal';
 
 export default class MeetingProcessorPlugin extends Plugin {
 	settings: MeetingProcessorSettings;
@@ -12,6 +14,7 @@ export default class MeetingProcessorPlugin extends Plugin {
 	statusBar: StatusBarManager;
 	router: MeetingRouter;
 	skillLoader: SkillLoader;
+	peopleManager: PeopleManager;
 	processing: boolean = false;
 
 	async onload() {
@@ -28,6 +31,7 @@ export default class MeetingProcessorPlugin extends Plugin {
 		await this.skillLoader.loadAll();
 		
 		this.router = new MeetingRouter(this.app, this.settings, this.copilotClient, this.skillLoader, this.statusBar);
+		this.peopleManager = new PeopleManager(this.app);
 
 		// Add ribbon icon
 		this.addRibbonIcon('brain-circuit', 'Process Meeting', async () => {
@@ -40,6 +44,16 @@ export default class MeetingProcessorPlugin extends Plugin {
 			name: 'Process Meeting',
 			callback: async () => {
 				await this.processMeeting();
+			}
+		});
+
+		// Add command palette command + Daily Note button target for importing a
+		// pasted calendar schedule into one meeting note per real meeting.
+		this.addCommand({
+			id: 'import-daily-schedule',
+			name: "Import Today's Schedule",
+			callback: async () => {
+				await this.importDailySchedule();
 			}
 		});
 
@@ -108,8 +122,25 @@ export default class MeetingProcessorPlugin extends Plugin {
 		}
 	}
 
+	async importDailySchedule() {
+		const file = this.app.workspace.getActiveFile();
+		if (!file) {
+			new Notice('No file is currently open');
+			return;
+		}
+
+		const dailyNoteValidation = await validateDailyNote(file, this.app, this.settings);
+		if (!dailyNoteValidation.valid) {
+			new Notice(`Cannot import schedule: ${dailyNoteValidation.error}`);
+			return;
+		}
+
+		// Daily Note filenames are validated as YYYY-MM-DD.md.
+		const date = file.basename;
+		new SchedulePasteModal(this.app, this.settings, this.peopleManager, date).open();
+	}
+
 	onunload() {
-		// Cleanup
 		if (this.copilotClient) {
 			this.copilotClient.stop();
 		}
