@@ -9,6 +9,8 @@ export interface MockDaemonConfig {
 	speakersResponse?: { speakers: string[] };
 	extractClipResponse?: { clip_path: string };
 	extractClipStatus?: number;
+	forgetSpeakerResponse?: { deleted: number };
+	forgetSpeakerStatus?: number;
 }
 
 export interface MockDaemon {
@@ -75,6 +77,15 @@ export function createMockDaemon(config: MockDaemonConfig): Promise<MockDaemon> 
 						return;
 					}
 					res.end(JSON.stringify(config.extractClipResponse ?? { clip_path: '' }));
+					return;
+				}
+				if (req.url?.startsWith('/speakers/') && req.method === 'DELETE') {
+					if (config.forgetSpeakerStatus && config.forgetSpeakerStatus >= 400) {
+						res.statusCode = config.forgetSpeakerStatus;
+						res.end('{}');
+						return;
+					}
+					res.end(JSON.stringify(config.forgetSpeakerResponse ?? { deleted: 0 }));
 					return;
 				}
 				res.statusCode = 404;

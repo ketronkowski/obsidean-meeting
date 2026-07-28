@@ -1,4 +1,4 @@
-import { App, Modal } from 'obsidian';
+import { App, Modal, Notice } from 'obsidian';
 import { VoiceAnalysisResponse, VoiceNameAssignment, VoiceSpeakerResult } from '../voice-analysis-types';
 import { VoiceAnalysisClient } from '../voice-analysis-client';
 
@@ -13,8 +13,9 @@ const AUTO_THRESHOLD = 0.75;
  *   - Unresolved: low-confidence speakers that need manual assignment
  *
  * Each speaker row also has a ▶ Play button that lazily extracts (via the
- * whisper-speaker-id daemon) and plays their longest utterance, to help the
- * user identify who's who by voice in addition to reading sample quotes.
+ * whisper-speaker-id daemon) and plays their longest utterance, and — when a
+ * sample quote could be extracted from the .whisper file — a short italic
+ * transcript excerpt, to help the user identify who's who by voice and text.
  */
 export class VoiceSpeakerAttributionModal extends Modal {
 	private response: VoiceAnalysisResponse;
@@ -22,13 +23,39 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	private resolve: (assignments: VoiceNameAssignment[]) => void;
 	private whisperPath: string | null;
 	private voiceClient: VoiceAnalysisClient | null;
+	private sampleQuotes: Map<string, string>;
 
-	// Per-UUID pending name decisions (empty string = skip)
+	// Per-UUID pending name decisions (empty string = skip). Forced to '' while
+	// that row's Skip checkbox is checked.
 	private pending: Map<string, string>;
+
+	// Per-UUID "real" assignment, mirroring `pending` but never zeroed out by
+	// Skip — used to know which name to wipe for a row even after Skip has
+	// forced `pending` to ''. Also used to restore `pending` when Skip is
+	// unchecked again.
+	private lastAssignedName: Map<string, string> = new Map();
+
+	// Per-UUID references to the dropdown/text-input controls, so the batched
+	// wipe flow and Skip-checkbox handler can read/reset a row's UI without a
+	// full modal re-render.
+	private selectEls: Map<string, HTMLSelectElement> = new Map();
+	private inputEls: Map<string, HTMLInputElement> = new Map();
+
+	// Per-UUID references to the Skip / Clear-voice-cache checkboxes (only
+	// rendered on Auto/Confirm rows). Clear-voice-cache is gated by Skip: it
+	// stays disabled+unchecked until Skip is checked for that row.
+	private skipCheckboxEls: Map<string, HTMLInputElement> = new Map();
+	private wipeCheckboxEls: Map<string, HTMLInputElement> = new Map();
+
+	// Mutable copy of known reference-library speaker names, shrunk in-session
+	// as names are wiped via the batched Apply/Skip-All flow so they stop
+	// being offered.
+	private knownSpeakers: string[];
 
 	// Audio playback state — one shared <audio> element so only one clip plays at a time
 	private audioEl: HTMLAudioElement | null = null;
 	private clipCache: Map<string, string> = new Map(); // speakerUuid -> local clip path
+	private blobUrlCache: Map<string, string> = new Map(); // speakerUuid -> blob: object URL
 	private playingUuid: string | null = null;
 	private playButtons: Map<string, HTMLButtonElement> = new Map();
 
@@ -39,6 +66,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		resolve: (assignments: VoiceNameAssignment[]) => void,
 		whisperPath: string | null = null,
 		voiceClient: VoiceAnalysisClient | null = null,
+		sampleQuotes: Map<string, string> = new Map(),
 	) {
 		super(app);
 		this.response = response;
@@ -46,11 +74,14 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		this.resolve = resolve;
 		this.whisperPath = whisperPath;
 		this.voiceClient = voiceClient;
+		this.sampleQuotes = sampleQuotes;
 		this.pending = new Map();
+		this.knownSpeakers = [...response.knownSpeakers];
 
 		// Initialize with suggested names
 		for (const s of response.speakers) {
 			this.pending.set(s.speakerUuid, s.bestMatch ?? '');
+			this.lastAssignedName.set(s.speakerUuid, s.bestMatch ?? '');
 		}
 	}
 
@@ -87,7 +118,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		const toggle = header.createEl('span', { text: '▶', cls: 'voice-section-toggle' });
 		header.createEl('strong', { text: ` ✓ Auto-identified (${speakers.length})` });
 		header.createEl('span', {
-			text: ' — expand to review',
+			text: ' — expand to review or correct',
 			cls: 'voice-section-hint',
 		});
 
@@ -103,13 +134,25 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		for (const s of speakers) {
 			const row = body.createDiv({ cls: 'voice-row' });
 			row.createEl('span', { text: s.displayName, cls: 'voice-speaker-label' });
-			row.createEl('span', { text: ' → ', cls: 'voice-arrow' });
-			row.createEl('span', { text: s.bestMatch ?? '', cls: 'voice-assigned-name' });
 			if (s.bestMatch && this.attendees.some(a => a.toLowerCase() === s.bestMatch!.toLowerCase())) {
 				row.createEl('span', { text: '👤', cls: 'voice-attendee-badge' });
 			}
 			this.renderScoreBadge(row, s.score);
 			this.renderPlayButton(row, s.speakerUuid);
+			this.renderSampleQuote(row, s.speakerUuid);
+
+			// Correctable, same as Confirm rows — a wrong high-confidence match is
+			// otherwise invisible/unfixable since Apply always used to accept it verbatim.
+			const assignRow = row.createDiv({ cls: 'voice-assign-row' });
+			const select = this.buildDropdown(assignRow, s.bestMatch ?? '');
+			this.selectEls.set(s.speakerUuid, select);
+			select.addEventListener('change', () => {
+				this.pending.set(s.speakerUuid, select.value);
+				this.lastAssignedName.set(s.speakerUuid, select.value);
+			});
+
+			const input = this.renderNewNameInput(row, s.speakerUuid);
+			this.renderSkipAndWipeCheckboxes(assignRow, s.speakerUuid, select, input);
 		}
 	}
 
@@ -123,12 +166,18 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			row.createEl('span', { text: s.displayName, cls: 'voice-speaker-label' });
 			this.renderScoreBadge(row, s.score);
 			this.renderPlayButton(row, s.speakerUuid);
+			this.renderSampleQuote(row, s.speakerUuid);
 
 			const assignRow = row.createDiv({ cls: 'voice-assign-row' });
 			const select = this.buildDropdown(assignRow, s.bestMatch ?? '');
-			select.addEventListener('change', () => this.pending.set(s.speakerUuid, select.value));
+			this.selectEls.set(s.speakerUuid, select);
+			select.addEventListener('change', () => {
+				this.pending.set(s.speakerUuid, select.value);
+				this.lastAssignedName.set(s.speakerUuid, select.value);
+			});
 
-			this.renderNewNameInput(row, s.speakerUuid);
+			const input = this.renderNewNameInput(row, s.speakerUuid);
+			this.renderSkipAndWipeCheckboxes(assignRow, s.speakerUuid, select, input);
 		}
 	}
 
@@ -140,11 +189,13 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			const row = section.createDiv({ cls: 'voice-row' });
 			row.createEl('span', { text: s.displayName, cls: 'voice-speaker-label' });
 			this.renderPlayButton(row, s.speakerUuid);
+			this.renderSampleQuote(row, s.speakerUuid);
 
 			const assignRow = row.createDiv({ cls: 'voice-assign-row' });
 			assignRow.createEl('span', { text: 'Assign to: ', cls: 'voice-assign-label' });
 
 			const select = this.buildDropdown(assignRow, '');
+			this.selectEls.set(s.speakerUuid, select);
 			select.addEventListener('change', () => this.pending.set(s.speakerUuid, select.value));
 
 			this.renderNewNameInput(row, s.speakerUuid);
@@ -161,7 +212,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		select.createEl('option', { text: '— Skip —', value: '' });
 
 		const attendeeSet = new Set(this.attendees.map(n => n.toLowerCase()));
-		const otherSpeakers = this.response.knownSpeakers.filter(
+		const otherSpeakers = this.knownSpeakers.filter(
 			n => !attendeeSet.has(n.toLowerCase()),
 		);
 
@@ -188,7 +239,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		return select;
 	}
 
-	private renderNewNameInput(container: HTMLElement, uuid: string) {
+	private renderNewNameInput(container: HTMLElement, uuid: string): HTMLInputElement {
 		const inputRow = container.createDiv({ cls: 'voice-new-name-row' });
 		inputRow.createEl('span', { text: 'or type a new name: ', cls: 'voice-assign-label' });
 
@@ -200,7 +251,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		for (const name of sortedNames(this.attendees)) {
 			datalist.createEl('option', { value: name });
 		}
-		for (const name of sortedNames(this.response.knownSpeakers)) {
+		for (const name of sortedNames(this.knownSpeakers)) {
 			if (!attendeeSet.has(name.toLowerCase())) {
 				datalist.createEl('option', { value: name });
 			}
@@ -210,14 +261,18 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			type: 'text',
 			cls: 'voice-new-name-input',
 			placeholder: 'New speaker name…',
-		} as DomElementInfo & { type: string; placeholder: string });
-		(input as HTMLInputElement).setAttribute('list', datalistId);
+		} as DomElementInfo & { type: string; placeholder: string }) as HTMLInputElement;
+		input.setAttribute('list', datalistId);
+		this.inputEls.set(uuid, input);
 		input.addEventListener('input', () => {
-			if ((input as HTMLInputElement).value.trim()) {
-				this.pending.set(uuid, (input as HTMLInputElement).value.trim());
+			if (input.value.trim()) {
+				this.pending.set(uuid, input.value.trim());
+				this.lastAssignedName.set(uuid, input.value.trim());
 			}
 		});
+		return input;
 	}
+
 
 	private renderScoreBadge(container: HTMLElement, score: number) {
 		const pct = Math.round(score * 100);
@@ -229,6 +284,121 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			cls: `voice-score-badge ${cls}`,
 		});
 	}
+
+	/**
+	 * Render a short transcript excerpt for this speaker (if one was extracted
+	 * from the .whisper file) so users have text context, not just a voice
+	 * match score/Play button, to help identify who's speaking.
+	 */
+	private renderSampleQuote(container: HTMLElement, speakerUuid: string) {
+		const quote = this.sampleQuotes.get(speakerUuid);
+		if (!quote) return;
+		container.createEl('div', {
+			text: `"${quote}"`,
+			cls: 'voice-sample-quote',
+		});
+	}
+
+	// ---------------------------------------------------------------------------
+	// Skip / Clear-voice-cache checkboxes
+	// ---------------------------------------------------------------------------
+
+	/**
+	 * Render the "Skip" and "Clear voice cache" checkboxes next to a row's
+	 * dropdown (Auto/Confirm rows only).
+	 *
+	 * - "Skip": when checked, disables `select`/`input` (forcing this row's
+	 *   assignment to skip regardless of whatever was selected/typed) and
+	 *   enables the "Clear voice cache" checkbox for this row. When
+	 *   unchecked, re-enables `select`/`input`, restores this row's pending
+	 *   assignment from the dropdown's current value, and disables+unchecks
+	 *   "Clear voice cache" again.
+	 * - "Clear voice cache": gated by Skip — starts disabled/unchecked, and
+	 *   can only be checked while Skip is checked. Doesn't delete anything
+	 *   immediately; marked rows are collected and wiped in one batch when
+	 *   Apply/Skip All is clicked (see `finishWithWipes`). Only rendered
+	 *   when a voice client is available (nothing to wipe against otherwise).
+	 */
+	private renderSkipAndWipeCheckboxes(
+		container: HTMLElement,
+		uuid: string,
+		select: HTMLSelectElement,
+		input: HTMLInputElement,
+	) {
+		const group = container.createDiv({ cls: 'voice-checkbox-group' });
+
+		const skipLabel = group.createEl('label', { cls: 'voice-checkbox-label' });
+		const skipCb = skipLabel.createEl('input', { type: 'checkbox' } as DomElementInfo & { type: string }) as HTMLInputElement;
+		skipLabel.createEl('span', { text: ' Skip' });
+		this.skipCheckboxEls.set(uuid, skipCb);
+
+		let wipeCb: HTMLInputElement | null = null;
+		if (this.voiceClient) {
+			const wipeLabel = group.createEl('label', { cls: 'voice-checkbox-label' });
+			wipeCb = wipeLabel.createEl('input', { type: 'checkbox' } as DomElementInfo & { type: string }) as HTMLInputElement;
+			wipeCb.disabled = true;
+			wipeLabel.createEl('span', { text: ' Clear voice cache' });
+			this.wipeCheckboxEls.set(uuid, wipeCb);
+		}
+
+		skipCb.addEventListener('change', () => {
+			if (skipCb.checked) {
+				select.disabled = true;
+				input.disabled = true;
+				this.pending.set(uuid, '');
+				if (wipeCb) wipeCb.disabled = false;
+			} else {
+				select.disabled = false;
+				input.disabled = false;
+				this.pending.set(uuid, select.value);
+				this.lastAssignedName.set(uuid, select.value);
+				if (wipeCb) {
+					wipeCb.checked = false;
+					wipeCb.disabled = true;
+				}
+			}
+		});
+	}
+
+	/**
+	 * Collect the set of names marked for deletion via a checked "Clear
+	 * voice cache" checkbox. Reads from `lastAssignedName` (not `pending`,
+	 * which is forced to '' once Skip is checked) so the correct name is
+	 * still wiped even though the row's final assignment is "skip".
+	 */
+	private collectWipeTargets(): string[] {
+		const names = new Set<string>();
+		for (const [uuid, cb] of this.wipeCheckboxEls) {
+			if (!cb.checked) continue;
+			const name = this.lastAssignedName.get(uuid);
+			if (name) names.add(name);
+		}
+		return [...names];
+	}
+
+	/**
+	 * Remove `name` from the in-session known-speakers list and reset any
+	 * row currently assigned to it (pending + its select/input UI) back to
+	 * blank, so the just-wiped name isn't immediately re-applied or
+	 * re-saved as a sample on Apply.
+	 */
+	private forgetNameEverywhere(name: string) {
+		this.knownSpeakers = this.knownSpeakers.filter(n => n.toLowerCase() !== name.toLowerCase());
+
+		for (const [uuid, assigned] of this.pending) {
+			if (assigned.toLowerCase() !== name.toLowerCase()) continue;
+
+			this.pending.set(uuid, '');
+			this.lastAssignedName.set(uuid, '');
+
+			const select = this.selectEls.get(uuid);
+			if (select) select.value = '';
+
+			const input = this.inputEls.get(uuid);
+			if (input) input.value = '';
+		}
+	}
+
 
 	// ---------------------------------------------------------------------------
 	// Audio playback
@@ -275,13 +445,32 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			this.clipCache.set(speakerUuid, clipPath);
 		}
 
+		// Obsidian's renderer CSP blocks `file://` as a <audio> media-src
+		// (NotSupportedError, even though the file itself is valid audio) —
+		// read the clip via Node fs and play it as a blob: object URL instead.
+		let blobUrl = this.blobUrlCache.get(speakerUuid) ?? null;
+		if (!blobUrl) {
+			try {
+				const { readFile } = require('fs/promises');
+				const data: Buffer = await readFile(clipPath);
+				const blob = new Blob([new Uint8Array(data)], { type: 'audio/mp4' });
+				blobUrl = URL.createObjectURL(blob);
+				this.blobUrlCache.set(speakerUuid, blobUrl);
+			} catch (err) {
+				console.warn(`[VoiceSpeakerAttributionModal] Failed to read clip for playback: ${err}`);
+				btn.textContent = '⚠ Unavailable';
+				setTimeout(() => { btn.textContent = '▶ Play'; }, 2000);
+				return;
+			}
+		}
+
 		if (!this.audioEl) {
 			this.audioEl = new Audio();
 			this.audioEl.addEventListener('ended', () => this.resetPlayButton());
 			this.audioEl.addEventListener('pause', () => this.resetPlayButton());
 		}
 
-		this.audioEl.src = `file://${clipPath}`;
+		this.audioEl.src = blobUrl;
 		this.playingUuid = speakerUuid;
 		btn.textContent = '⏸ Pause';
 		try {
@@ -315,7 +504,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		const row = container.createDiv({ cls: 'voice-buttons' });
 
 		const skipBtn = row.createEl('button', { text: 'Skip All', cls: 'mod-muted' });
-		skipBtn.addEventListener('click', () => { this.resolve([]); this.close(); });
+		skipBtn.addEventListener('click', () => { this.finishWithWipes([]); });
 
 		const applyBtn = row.createEl('button', { text: 'Apply', cls: 'mod-cta' });
 		applyBtn.addEventListener('click', () => { this.applyAndClose(); });
@@ -324,15 +513,56 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	private applyAndClose() {
 		const assignments: VoiceNameAssignment[] = [];
 
-		// Include auto-assigned speakers
+		// pending is seeded with bestMatch for every speaker (including auto) in the
+		// constructor and updated live by each row's dropdown/new-name input, so it
+		// already reflects any correction — no need to special-case action === 'auto'.
 		for (const s of this.response.speakers) {
-			if (s.action === 'auto' && s.bestMatch) {
-				assignments.push({ speakerUuid: s.speakerUuid, name: s.bestMatch });
-				continue;
-			}
-			// Confirm / skip: use whatever is in pending
 			const name = this.pending.get(s.speakerUuid);
 			if (name) assignments.push({ speakerUuid: s.speakerUuid, name });
+		}
+
+		this.finishWithWipes(assignments);
+	}
+
+	/**
+	 * Shared tail end of both "Apply" and "Skip All": collect any rows whose
+	 * "Clear voice cache" checkbox is checked, confirm once with the user
+	 * (listing every name to be deleted), delete them via the voice client,
+	 * show a summary Notice, then resolve the modal's promise with
+	 * `assignments` and close.
+	 *
+	 * If the user cancels the combined confirm, the whole action (including
+	 * the name assignments) is aborted — the modal stays open so the user
+	 * can reconsider.
+	 */
+	private async finishWithWipes(assignments: VoiceNameAssignment[]) {
+		const wipeNames = this.collectWipeTargets();
+
+		if (wipeNames.length > 0) {
+			const confirmed = window.confirm(
+				`Permanently delete all stored voice samples for: ${wipeNames.join(', ')}? ` +
+				`This forgets these voice profiles entirely — they will need to be re-identified from scratch next time.`,
+			);
+			if (!confirmed) return;
+
+			if (this.voiceClient) {
+				let deletedCount = 0;
+				const failures: string[] = [];
+				for (const name of wipeNames) {
+					try {
+						await this.voiceClient.forgetSpeaker(name);
+						deletedCount++;
+						this.forgetNameEverywhere(name);
+					} catch (err) {
+						console.error(`[VoiceSpeakerAttributionModal] forgetSpeaker failed for "${name}": ${err}`);
+						failures.push(name);
+					}
+				}
+				const summary = failures.length > 0
+					? `Deleted voice samples for ${deletedCount} speaker(s). Failed: ${failures.join(', ')}.`
+					: `Deleted voice samples for ${deletedCount} speaker(s).`;
+				new Notice(summary);
+			}
 		}
 
 		this.resolve(assignments);
@@ -345,6 +575,10 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			this.audioEl.src = '';
 			this.audioEl = null;
 		}
+		for (const url of this.blobUrlCache.values()) {
+			URL.revokeObjectURL(url);
+		}
+		this.blobUrlCache.clear();
 		this.contentEl.empty();
 	}
 
@@ -360,6 +594,8 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	 *                     clips. Pass null to disable the Play button (e.g. tests).
 	 * @param voiceClient  Client used to call the whisper-speaker-id daemon's
 	 *                     /extract-clip endpoint. Pass null to disable the Play button.
+	 * @param sampleQuotes Map of speakerUuid -> a representative transcript excerpt,
+	 *                     shown alongside confirm/unresolved speakers for text context.
 	 */
 	static show(
 		app: App,
@@ -367,6 +603,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		attendees: string[],
 		whisperPath: string | null = null,
 		voiceClient: VoiceAnalysisClient | null = null,
+		sampleQuotes: Map<string, string> = new Map(),
 	): Promise<VoiceNameAssignment[]> {
 		const allAuto = response.speakers.every(s => s.action === 'auto');
 		if (allAuto) {
@@ -378,7 +615,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		}
 
 		return new Promise(resolve => {
-			new VoiceSpeakerAttributionModal(app, response, attendees, resolve, whisperPath, voiceClient).open();
+			new VoiceSpeakerAttributionModal(app, response, attendees, resolve, whisperPath, voiceClient, sampleQuotes).open();
 		});
 	}
 }

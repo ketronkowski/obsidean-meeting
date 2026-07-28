@@ -1,4 +1,4 @@
-import { App, TFile } from 'obsidian';
+import { App, Notice, TFile } from 'obsidian';
 import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { CopilotClientManager } from '../copilot-client';
 import { SkillLoader } from '../skill-loader';
@@ -14,9 +14,10 @@ import {
 	computeBestGuesses,
 	rewriteTranscript,
 	extractTranscriptText,
+	countDistinctSpeakerLabels,
 } from '../speaker-resolver';
 import { cleanCopilotOutput } from '../output-cleaner';
-import { getSection, upsertSection } from '../section-utils';
+import { getSection, replaceSection, upsertSection } from '../section-utils';
 import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import { readFile } from 'fs/promises';
@@ -59,7 +60,7 @@ export abstract class BaseMeetingHandler {
 				console.log('[expandTranscriptEmbed] No transcript section found');
 				return;
 			}
-			await this.writeExpandedTranscript(file, content, rawTranscript, fallback, true);
+			await this.writeExpandedTranscript(file, content, fallback.sourceRef, fallback.text, true);
 			return;
 		}
 
@@ -77,7 +78,7 @@ export abstract class BaseMeetingHandler {
 				console.log('[expandTranscriptEmbed] Transcript is already inline text, skipping');
 				return;
 			}
-			await this.writeExpandedTranscript(file, content, rawTranscript, fallback, true);
+			await this.writeExpandedTranscript(file, content, fallback.sourceRef, fallback.text, true);
 			return;
 		}
 
@@ -207,6 +208,41 @@ export abstract class BaseMeetingHandler {
 		}
 	}
 
+	/**
+	 * Safety net for the "everyone got merged into one speaker" failure mode: some
+	 * transcription engines (e.g. Apple's native/on-device speech engine used by
+	 * MacWhisper) don't diarize multiple speakers at all — they produce a single voice
+	 * stream and pre-label it with a real name (often the recording device's owner)
+	 * instead of a generic "Speaker N" placeholder. Downstream tooling (our cleaners,
+	 * and the whisper-speaker-id voice-matching daemon, which intentionally skips
+	 * already-named speakers) then has nothing to disambiguate, and no error is ever
+	 * raised — the note just silently ends up with the whole meeting attributed to one
+	 * person. Warn the user so this doesn't go unnoticed.
+	 */
+	protected async warnIfSpeakerCountMismatch(file: TFile): Promise<void> {
+		const content = await this.app.vault.read(file);
+		const transcript = getSection(content, 'Transcript');
+		if (!transcript || transcript.length < 20) return;
+
+		const attendees = extractAttendeeLinks(content);
+		if (attendees.length <= 1) return; // nothing to mismatch against
+
+		const speakerCount = countDistinctSpeakerLabels(transcript);
+
+		if (speakerCount === 1) {
+			console.warn(
+				`[warnIfSpeakerCountMismatch] Transcript has only 1 distinct speaker label but ` +
+				`${attendees.length} attendees are listed — the recording likely wasn't diarized ` +
+				`(check the MacWhisper transcription engine/model and audio capture settings).`
+			);
+			new Notice(
+				`⚠️ Transcript for "${file.basename}" has only 1 speaker but ${attendees.length} attendees were listed. ` +
+				`The recording may not have been diarized (check MacWhisper's transcription engine) — review the transcript before trusting the summary.`,
+				10000,
+			);
+		}
+	}
+
 	protected hasCopilotSummary(content: string): boolean {
 		const summaryContent = getSection(content, 'Copilot Summary');
 		if (!summaryContent || summaryContent.startsWith('#')) return false;
@@ -246,7 +282,7 @@ export abstract class BaseMeetingHandler {
 			extractedNames = await this.extractFromScreenshots(file, screenshots);
 		}
 
-		extractedNames = await this.mergeSupplementalAttendees(currentContent, extractedNames);
+		extractedNames = await this.mergeSupplementalAttendees(file, currentContent, extractedNames);
 
 		if (extractedNames.length === 0) {
 			console.log('Falling back to content extraction');
@@ -414,6 +450,27 @@ export abstract class BaseMeetingHandler {
 		}
 
 		console.log('[cleanTranscript] Raw transcript length:', rawTranscript.length, '— preview:', rawTranscript.substring(0, 80));
+
+		if (rawTranscript.includes('<!-- whisper-source -->')) {
+			// expandTranscriptEmbed() already ran the correct cleaner (e.g. MacWhisper) on
+			// this transcript before prepending the sentinel. Re-running detectAndClean()
+			// here would re-detect the already-clean "[Name]\nUtterance" text as matching
+			// GoogleRecorderCleaner's pattern (any "[text]" on its own line) and reformat
+			// it a second time, which treats the sentinel comment line as pre-speaker
+			// "preamble" and merges it into the first speaker's utterance — corrupting the
+			// transcript (e.g. "[Name]\n<!-- whisper-source --> First words..."). Skip the
+			// redundant re-clean; this transcript is already in its final form. The sentinel
+			// has now served its purpose (resolveSpeakers() already used it to skip the
+			// modal), so strip it here before it's left permanently visible in the note.
+			console.log('[cleanTranscript] Transcript sourced from .whisper file and already cleaned by expandTranscriptEmbed — skipping re-clean');
+			const stripped = rawTranscript.replace(/^<!-- whisper-source -->\n?/, '');
+			if (stripped !== rawTranscript) {
+				const newContent = replaceSection(content, 'Transcript', stripped);
+				await this.app.vault.modify(file, newContent);
+				console.log('[cleanTranscript] Stripped whisper-source sentinel from transcript');
+			}
+			return;
+		}
 
 		const resolvedText = await this.resolveTranscriptContent(rawTranscript);
 		if (!resolvedText) {
@@ -764,15 +821,34 @@ export abstract class BaseMeetingHandler {
 		console.log('Summary section updated');
 	}
 
-	protected async resolveNonEmbedTranscript(_file: TFile, _content: string, _rawTranscript: string): Promise<string | null> {
+	protected async resolveNonEmbedTranscript(_file: TFile, _content: string, _rawTranscript: string): Promise<{ text: string; sourceRef: string } | null> {
 		return null;
 	}
 
-	protected transformExpandedTranscript(_rawTranscript: string, transcriptText: string): string {
-		return transcriptText;
+	/**
+	 * Default: prepend the `<!-- whisper-source -->` sentinel when the transcript came
+	 * from a `.whisper` embed, so resolveSpeakers() knows voice ID already had a chance
+	 * to name these speakers (and skips reopening the text-heuristic modal for them).
+	 * Meeting-type-agnostic — applies equally to general and standup meetings.
+	 */
+	protected transformExpandedTranscript(rawTranscript: string, transcriptText: string): string {
+		return rawTranscript.includes('.whisper')
+			? `<!-- whisper-source -->\n${transcriptText}`
+			: transcriptText;
 	}
 
-	protected shouldSkipSpeakerResolution(_rawTranscript: string): boolean {
+	/**
+	 * Default: skip the SpeakerAttributionModal when the transcript already carries the
+	 * `<!-- whisper-source -->` sentinel — those speaker names are authoritative (from
+	 * voice ID or already-named in the .whisper file), whether or not the user assigned
+	 * every speaker there. Without this, any remaining [Speaker N] placeholders would
+	 * reopen a second, redundant "Identify Meeting Speakers" dialog right after voice ID.
+	 */
+	protected shouldSkipSpeakerResolution(rawTranscript: string): boolean {
+		if (rawTranscript.includes('<!-- whisper-source -->')) {
+			console.log('[resolveSpeakers] Transcript sourced from .whisper file — speaker names are authoritative, skipping modal');
+			return true;
+		}
 		return false;
 	}
 
@@ -811,7 +887,7 @@ export abstract class BaseMeetingHandler {
 		return screenshots;
 	}
 
-	protected async mergeSupplementalAttendees(_content: string, extractedNames: string[]): Promise<string[]> {
+	protected async mergeSupplementalAttendees(_file: TFile, _content: string, extractedNames: string[]): Promise<string[]> {
 		return extractedNames;
 	}
 
@@ -826,7 +902,28 @@ export abstract class BaseMeetingHandler {
 	}
 
 	protected parseScreenshotNames(namesList: string): string[] {
-		return namesList.split(',').map(n => n.trim()).filter(n =>
+		const rawTokens = namesList.split(',').map(n => n.trim()).filter(n => n.length > 0);
+
+		// Vision sometimes ignores the "First Last" instruction and instead transcribes
+		// a Teams attendee list literally as "Last, First, Last, First, ..." (comma-separated
+		// surname/given-name pairs rather than comma-separated full names). Splitting that on
+		// every comma yields single-word fragments that fail the full-name check below, so
+		// detect this shape first and re-pair tokens into "First Last" before filtering.
+		const looksLikeNamePairs = rawTokens.length >= 2 &&
+			rawTokens.length % 2 === 0 &&
+			rawTokens.every(t => !t.includes(' '));
+
+		let candidates: string[];
+		if (looksLikeNamePairs) {
+			candidates = [];
+			for (let i = 0; i < rawTokens.length; i += 2) {
+				candidates.push(`${rawTokens[i + 1]} ${rawTokens[i]}`);
+			}
+		} else {
+			candidates = rawTokens;
+		}
+
+		return candidates.filter(n =>
 			n.length > 0 &&
 			n.length < 60 &&
 			!/don't|cannot|please/i.test(n) &&
@@ -881,7 +978,20 @@ export abstract class BaseMeetingHandler {
 		allowCreateSection: boolean,
 	): Promise<void> {
 		const cleanResult = this.transcriptDetector.detectAndClean(resolved);
-		const toWrite = cleanResult.cleaned.length >= 20 ? cleanResult.cleaned : resolved;
+		const cleanedOk = cleanResult.cleaned.length >= 20;
+
+		// If cleaning failed/produced nothing AND the resolved content still looks like
+		// raw, un-parsed JSON (e.g. a .whisper metadata.json blob none of the cleaners
+		// recognized), don't silently dump that JSON into the note as if it were the
+		// transcript — leave the section untouched instead, same "avoid data loss"
+		// behavior cleanTranscript() already has.
+		const looksLikeRawJson = /^[{[]/.test(resolved.trim());
+		if (!cleanedOk && looksLikeRawJson) {
+			console.warn('[expandTranscriptEmbed] Cleaner produced no usable output and resolved content looks like raw JSON — leaving transcript section untouched to avoid data loss');
+			return;
+		}
+
+		const toWrite = cleanedOk ? cleanResult.cleaned : resolved;
 		console.log(`[expandTranscriptEmbed] Cleaned with: ${cleanResult.cleaner}, output length: ${toWrite.length}`);
 
 		const finalText = this.transformExpandedTranscript(rawTranscript, toWrite);

@@ -43,6 +43,8 @@ export class GeneralMeetingHandler extends BaseMeetingHandler {
 				await this.cleanTranscript(file);
 			}
 
+			await this.warnIfSpeakerCountMismatch(file);
+
 			this.statusBar.show('Generating summary...', 0);
 			await this.generateSummary(file);
 
@@ -54,7 +56,7 @@ export class GeneralMeetingHandler extends BaseMeetingHandler {
 		}
 	}
 
-	protected async resolveNonEmbedTranscript(file: TFile, _content: string, _rawTranscript: string): Promise<string | null> {
+	protected async resolveNonEmbedTranscript(file: TFile, _content: string, _rawTranscript: string): Promise<{ text: string; sourceRef: string } | null> {
 		const whisperPath = this.voiceResolver.resolveWhisperForMeeting(file);
 		if (!whisperPath) {
 			console.log('[expandTranscriptEmbed] No embed and no matching whisper file, skipping');
@@ -63,7 +65,7 @@ export class GeneralMeetingHandler extends BaseMeetingHandler {
 
 		console.log('[expandTranscriptEmbed] Found whisper file by meeting name:', whisperPath);
 		const resolved = await this.resolveTranscriptContent(whisperPath, true);
-		return resolved && resolved.length >= 20 ? resolved : null;
+		return resolved && resolved.length >= 20 ? { text: resolved, sourceRef: whisperPath } : null;
 	}
 
 	protected async buildUpdatedAttendeesContent(content: string, names: string[]): Promise<string | null> {

@@ -247,4 +247,67 @@ describe('VoiceAnalysisClient', () => {
 
 		await daemon.close();
 	});
+
+	// -------------------------------------------------------------------------
+	// forgetSpeaker
+	// -------------------------------------------------------------------------
+
+	test('forgetSpeaker sends DELETE to /speakers/{name} and returns deleted count', async () => {
+		const daemon = await createMockDaemon({ forgetSpeakerResponse: { deleted: 3 } });
+		const client = new VoiceAnalysisClient({
+			enabled: true,
+			binaryPath: 'whisper-speaker-id',
+			port: daemon.port,
+			autoStart: false,
+		});
+
+		const deleted = await client.forgetSpeaker('Shaji Mohammed');
+		expect(deleted).toBe(3);
+
+		const req = daemon.recordedRequests.find(r => r.method === 'DELETE');
+		expect(req).toBeDefined();
+		expect(req!.path).toBe('/speakers/Shaji%20Mohammed');
+
+		await daemon.close();
+	});
+
+	test('forgetSpeaker falls back to CLI when HTTP is unreachable', async () => {
+		const client = new VoiceAnalysisClient({
+			enabled: true,
+			binaryPath: process.execPath, // node — used to fake a "CLI" that prints expected output
+			port: 19996, // nothing listening
+			autoStart: false,
+		});
+
+		// Spawn Node itself with an inline script printing the expected CLI output,
+		// simulating `whisper-speaker-id forget-speaker` succeeding.
+		const spawnMock = jest.spyOn(require('child_process'), 'spawn');
+		spawnMock.mockImplementation((..._args: unknown[]) => {
+			const { EventEmitter } = require('events');
+			const child: any = new EventEmitter();
+			child.stdout = new EventEmitter();
+			child.stderr = new EventEmitter();
+			process.nextTick(() => {
+				child.stdout.emit('data', Buffer.from('Deleted 2 sample(s) for speaker: Shaji Mohammed\n'));
+				child.emit('close', 0);
+			});
+			return child;
+		});
+
+		const deleted = await client.forgetSpeaker('Shaji Mohammed');
+		expect(deleted).toBe(2);
+
+		spawnMock.mockRestore();
+	});
+
+	test('forgetSpeaker rejects when both HTTP and CLI fail', async () => {
+		const client = new VoiceAnalysisClient({
+			enabled: true,
+			binaryPath: 'nonexistent-binary-12345',
+			port: 19995, // nothing listening
+			autoStart: false,
+		});
+
+		await expect(client.forgetSpeaker('Nobody')).rejects.toThrow();
+	});
 });

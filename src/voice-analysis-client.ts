@@ -21,6 +21,34 @@ interface DaemonState {
 const HEALTH_POLL_INTERVAL_MS = 2000;
 const HEALTH_POLL_TIMEOUT_MS = 300_000; // 5 minutes — model loading can be slow on first run
 
+// Electron/GUI apps on macOS (including Obsidian) are launched by launchd/Finder with a
+// minimal inherited PATH — typically just /usr/bin:/bin:/usr/sbin:/sbin — which does NOT
+// include Homebrew's /opt/homebrew/bin (Apple Silicon) or /usr/local/bin (Intel), nor
+// common user bin dirs. child_process.spawn() inherits that same restricted PATH by
+// default. whisper-speaker-id shells out to `ffmpeg`/`ffprobe` for every audio segment
+// it embeds, so without those dirs on PATH it silently fails every extraction (caught as
+// per-segment warnings) and analyze() ends up with zero usable embeddings — reported to
+// the plugin as "no speakers", even though generic speakers exist in the .whisper file.
+const EXTRA_PATH_DIRS = [
+	'/opt/homebrew/bin',
+	'/opt/homebrew/sbin',
+	'/usr/local/bin',
+	'/usr/local/sbin',
+	os.homedir() + '/.local/bin',
+	os.homedir() + '/bin',
+];
+
+/** Build an environment for spawned child processes with common brew/user bin dirs
+ *  prepended to PATH, so tools like ffmpeg/ffprobe are found even when Obsidian itself
+ *  was launched with a minimal GUI-app PATH. Exported for unit testing. */
+export function buildSpawnEnv(): NodeJS.ProcessEnv {
+	const currentPath = process.env.PATH ?? '';
+	const existing = new Set(currentPath.split(':').filter(Boolean));
+	const toPrepend = EXTRA_PATH_DIRS.filter(dir => !existing.has(dir));
+	const path = [...toPrepend, currentPath].filter(Boolean).join(':');
+	return { ...process.env, PATH: path };
+}
+
 export class VoiceAnalysisClient {
 	private settings: VoiceClientSettings;
 	private daemon: DaemonState = { process: null, pid: null };
@@ -88,6 +116,7 @@ export class VoiceAnalysisClient {
 		const child = spawn(binary, ['serve', '--port', String(port)], {
 			detached: true,
 			stdio: ['ignore', logFd, logFd],
+			env: buildSpawnEnv(),
 		});
 
 		child.on('error', (err) => {
@@ -192,6 +221,29 @@ export class VoiceAnalysisClient {
 		}
 	}
 
+	/**
+	 * Permanently forget a misidentified (or otherwise unwanted) reference speaker —
+	 * deletes all of their stored voice samples so future analyses stop matching
+	 * against them. Falls back to the `forget-speaker` CLI command if the daemon
+	 * is unreachable. Returns the number of samples deleted (0 if the name had none).
+	 */
+	async forgetSpeaker(name: string): Promise<number> {
+		// Try HTTP first
+		try {
+			console.log(`[VoiceAnalysisClient] DELETE /speakers/${name}`);
+			const data = await httpDelete(this.port, `/speakers/${encodeURIComponent(name)}`, 10_000) as { deleted: number };
+			return data?.deleted ?? 0;
+		} catch (err) {
+			console.warn(`[VoiceAnalysisClient] HTTP forget-speaker failed: ${err}, trying CLI fallback`);
+		}
+
+		// CLI fallback
+		const binary = this.expandPath(this.settings.binaryPath);
+		const stdout = await runCommand(binary, ['forget-speaker', '--name', name]);
+		const match = stdout.match(/Deleted (\d+) sample/);
+		return match ? parseInt(match[1], 10) : 0;
+	}
+
 	/** Return all names currently in the reference library. */
 	async getKnownSpeakers(): Promise<string[]> {
 		try {
@@ -293,9 +345,30 @@ function httpPost(port: number, path: string, body: unknown, timeoutMs: number):
 	});
 }
 
+/** HTTP DELETE using Node's built-in http module (bypasses Electron CSP for localhost). */
+function httpDelete(port: number, path: string, timeoutMs: number): Promise<unknown> {
+	return new Promise((resolve, reject) => {
+		const req = http.request({ hostname: '127.0.0.1', port, path, method: 'DELETE' }, (res) => {
+			let data = '';
+			res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+			res.on('end', () => {
+				if (res.statusCode && res.statusCode >= 400) {
+					reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+					return;
+				}
+				try { resolve(JSON.parse(data)); }
+				catch (e) { reject(new Error(`JSON parse error: ${e}`)); }
+			});
+		});
+		req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('Request timed out')); });
+		req.on('error', reject);
+		req.end();
+	});
+}
+
 function runCommand(binary: string, args: string[]): Promise<string> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+		const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], env: buildSpawnEnv() });
 		let stdout = '';
 		let stderr = '';
 		child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });

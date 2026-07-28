@@ -157,7 +157,13 @@ export function autoDetectMappings(
 
 		for (const attendee of attendees) {
 			const confidence = scoreSpeakerAttendee(profile, attendee);
-			console.log(`[autoDetectMappings]   ${profile.speakerId} vs "${attendee.displayName}": confidence=${confidence.toFixed(2)}`);
+			// Only log candidates with an actual signal — with the full vault's People
+			// list as candidates (not just meeting attendees), this loop can run
+			// hundreds of iterations per speaker; logging every zero-confidence miss
+			// floods the console and buries the useful output.
+			if (confidence > 0) {
+				console.log(`[autoDetectMappings]   ${profile.speakerId} vs "${attendee.displayName}": confidence=${confidence.toFixed(2)}`);
+			}
 			if (!bestMatch || confidence > bestMatch.confidence) {
 				bestMatch = { attendee, confidence };
 			}
@@ -310,4 +316,19 @@ export function extractTranscriptText(content: string): string {
 	const result = match ? match[1].trim() : '';
 	console.log('[extractTranscriptText] Extracted length:', result.length, result ? '— preview: ' + result.substring(0, 60) : '(empty)');
 	return result;
+}
+
+/**
+ * Count the number of distinct top-level "[Speaker Name]" labels in a cleaned
+ * transcript. Used to detect the "everyone got merged into one speaker" failure
+ * mode (e.g. when a transcription engine didn't diarize multiple speakers).
+ */
+export function countDistinctSpeakerLabels(transcript: string): number {
+	const speakerLabels = new Set<string>();
+	const labelPattern = /^\[([^\]]+)\]\s*$/gm;
+	let match: RegExpExecArray | null;
+	while ((match = labelPattern.exec(transcript)) !== null) {
+		speakerLabels.add(match[1].trim().toLowerCase());
+	}
+	return speakerLabels.size;
 }

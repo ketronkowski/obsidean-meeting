@@ -7,6 +7,8 @@ import { VoiceAnalysisClient } from './voice-analysis-client';
 import { VoiceSpeakerAttributionModal } from './ui/voice-speaker-attribution-modal';
 import { VoiceNameAssignment } from './voice-analysis-types';
 import { extractAttendeeLinks, extractTranscriptText } from './speaker-resolver';
+import { extractWhisperSampleQuotes } from './transcript/whisper-sample-quotes';
+import * as JSZip from 'jszip';
 
 /**
  * Shared helper that runs voice-based speaker identification on .whisper embeds.
@@ -62,10 +64,12 @@ export class VoiceSpeakerResolver {
 		const content = await this.app.vault.read(file);
 		const rawTranscript = extractTranscriptText(content);
 
-		if (!rawTranscript) return [];
-
-		// Resolve whisper file by meeting name (preferred) or embed reference
-		const embedText = rawTranscript.length < 300 && rawTranscript.includes('.whisper')
+		// NOTE: rawTranscript may legitimately be empty here — this method runs BEFORE
+		// expandTranscriptEmbed, so on first-time processing the note usually has no
+		// "# Transcript" section (and thus no embed reference) yet. Don't bail out in
+		// that case; still try to resolve the .whisper file by meeting basename, the
+		// same way resolveNonEmbedTranscript's fallback does later in the pipeline.
+		const embedText = rawTranscript && rawTranscript.length < 300 && rawTranscript.includes('.whisper')
 			? rawTranscript : undefined;
 		const whisperPath = this.resolveWhisperForMeeting(file, embedText);
 		if (!whisperPath) {
@@ -113,6 +117,12 @@ export class VoiceSpeakerResolver {
 				...noteAttendeeNames.filter(n => !hintSet.has(n.toLowerCase())),
 			];
 
+			// Extract sample quotes per speaker ID from the .whisper file itself
+			// (independent of the daemon) so unresolved/generic speakers can be
+			// shown a bit of transcript context alongside the voice match, to
+			// help the user identify who's who even before playing audio.
+			const sampleQuotes = await this.loadSampleQuotes(whisperPath);
+
 			// Show modal (auto-bypasses when all speakers ≥ 75% confidence).
 			// Pass whisperPath + voiceClient so the modal's Play buttons can
 			// lazily fetch audio clips via the daemon's /extract-clip endpoint.
@@ -122,6 +132,7 @@ export class VoiceSpeakerResolver {
 				mergedAttendees,
 				whisperPath,
 				this.voiceClient,
+				sampleQuotes,
 			);
 
 			if (assignments.length === 0) {
@@ -151,6 +162,26 @@ export class VoiceSpeakerResolver {
 			console.error('[VoiceSpeakerResolver] Unexpected error:', err);
 			new Notice('Voice analysis failed — falling back to text-based speaker matching.');
 			return [];
+		}
+	}
+
+	/**
+	 * Read and unzip a .whisper file to extract a sample quote per speaker ID,
+	 * for display in the voice attribution modal. Returns an empty map on any
+	 * read/parse failure — sample quotes are a nice-to-have, never fatal.
+	 */
+	private async loadSampleQuotes(whisperPath: string): Promise<Map<string, string>> {
+		try {
+			const { readFile } = require('fs/promises');
+			const buffer = await readFile(whisperPath);
+			const zip = await JSZip.loadAsync(buffer);
+			const metaEntry = zip.file('metadata.json');
+			if (!metaEntry) return new Map();
+			const text = await metaEntry.async('text');
+			return extractWhisperSampleQuotes(text);
+		} catch (err) {
+			console.warn('[VoiceSpeakerResolver] Failed to load sample quotes:', err);
+			return new Map();
 		}
 	}
 

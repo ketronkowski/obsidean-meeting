@@ -390,6 +390,48 @@ opacity: 0.6;
 cursor: wait;
 }
 
+/* Sample transcript excerpt shown for confirm/unresolved speakers */
+.voice-sample-quote {
+margin-top: 4px;
+font-size: 0.85em;
+font-style: italic;
+opacity: 0.75;
+padding-left: 4px;
+border-left: 2px solid var(--background-modifier-border);
+}
+
+/* Skip / Clear-voice-cache checkboxes, shown next to the name dropdown */
+.voice-checkbox-group {
+display: flex;
+align-items: center;
+gap: 12px;
+margin-left: 4px;
+}
+
+.voice-checkbox-label {
+display: inline-flex;
+align-items: center;
+gap: 4px;
+font-size: 0.85em;
+color: var(--text-muted);
+cursor: pointer;
+white-space: nowrap;
+}
+
+.voice-checkbox-label input[type="checkbox"]:disabled {
+cursor: not-allowed;
+}
+
+.voice-checkbox-label input[type="checkbox"]:disabled + span {
+opacity: 0.5;
+}
+
+.voice-select:disabled,
+.voice-new-name-input:disabled {
+opacity: 0.5;
+cursor: not-allowed;
+}
+
 .voice-buttons {
 display: flex;
 justify-content: flex-end;

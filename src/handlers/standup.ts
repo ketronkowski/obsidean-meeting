@@ -6,7 +6,7 @@ import { SkillLoader } from '../skill-loader';
 import { StatusBarManager } from '../ui/status-bar';
 import { JiraManager } from '../jira/manager';
 import { JiraKeyExtractor } from '../jira/extractor';
-import { getSection, upsertSection } from '../section-utils';
+import { getSection, upsertSection, isSectionEmpty } from '../section-utils';
 import { BaseMeetingHandler } from './base-meeting-handler';
 
 /**
@@ -38,12 +38,23 @@ export class StandupMeetingHandler extends BaseMeetingHandler {
 			console.log(`Detected ${team} team standup (board ${boardId})`);
 
 			const content = await this.app.vault.read(file);
-			const mode = this.detectMode(content);
+			const jiraSectionEmpty = this.isJiraSectionEmpty(content);
+			const hasTranscript = this.hasProcessableTranscript(file, content);
 
-			if (mode === 'pre-meeting') {
+			// These two are independent, not mutually exclusive: if the JIRA section is
+			// empty (e.g. a note went straight from "just created" to "has a locatable
+			// whisper export" without a pre-meeting pass ever running), pre-meeting JIRA
+			// population must still happen — even though post-meeting processing is also
+			// about to run. Running pre-meeting first means extractJiraUpdates() (the last
+			// step of processPostMeeting) has real JIRA items to check off against.
+			if (jiraSectionEmpty) {
 				await this.processPreMeeting(file, boardId, team);
-			} else {
+			}
+
+			if (hasTranscript) {
 				await this.processPostMeeting(file, boardId);
+			} else if (!jiraSectionEmpty) {
+				console.log('Standup: nothing to process (JIRA already populated, no transcript/whisper content found)');
 			}
 
 			this.statusBar.show('Complete!', 2000);
@@ -54,20 +65,35 @@ export class StandupMeetingHandler extends BaseMeetingHandler {
 		}
 	}
 
-	private detectMode(content: string): 'pre-meeting' | 'post-meeting' {
+	/**
+	 * Whether the `# JIRA` section is missing or blank — used to decide whether the
+	 * pre-meeting sprint query needs to (re-)run, independent of whether post-meeting
+	 * transcript/summary processing is also going to run in this same pass.
+	 */
+	private isJiraSectionEmpty(content: string): boolean {
+		return isSectionEmpty(content, 'JIRA');
+	}
+
+	/**
+	 * Whether there is transcript content to process — either inline text/embed already
+	 * in `# Transcript`, or a `.whisper` file MacWhisper exported directly to
+	 * `macWhisperTranscriptsDir` that can be auto-located by meeting filename (no embed
+	 * link required in the note at all).
+	 */
+	private hasProcessableTranscript(file: TFile, content: string): boolean {
 		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n# [^#]|$)/);
-		if (transcriptMatch) {
-			const transcriptContent = transcriptMatch[1].trim();
-			if (transcriptContent.length > 50 ||
-				transcriptContent.includes('.txt') ||
-				transcriptContent.includes('.docx') ||
-				transcriptContent.includes('.json') ||
-				transcriptContent.includes('![[')) {
-				return 'post-meeting';
-			}
+		const transcriptContent = transcriptMatch ? transcriptMatch[1].trim() : '';
+
+		if (transcriptContent.length > 50 ||
+			transcriptContent.includes('.txt') ||
+			transcriptContent.includes('.docx') ||
+			transcriptContent.includes('.json') ||
+			transcriptContent.includes('.whisper') ||
+			transcriptContent.includes('![[')) {
+			return true;
 		}
 
-		return 'pre-meeting';
+		return this.voiceResolver.resolveWhisperForMeeting(file, transcriptContent) !== null;
 	}
 
 	private async processPreMeeting(file: TFile, boardId: string, teamName: string): Promise<void> {
@@ -154,15 +180,25 @@ export class StandupMeetingHandler extends BaseMeetingHandler {
 		return this.extractFromScreenshots(file, screenshots);
 	}
 
-	private async extractWhisperSpeakers(content: string): Promise<string[]> {
+	private async extractWhisperSpeakers(file: TFile, content: string): Promise<string[]> {
 		const transcriptMatch = content.match(/# Transcript\s*\n([\s\S]*?)(?=\n# [^#]|$)/);
-		if (!transcriptMatch) return [];
+		const rawTranscript = transcriptMatch ? transcriptMatch[1].trim() : '';
 
-		const rawTranscript = transcriptMatch[1].trim();
-		if (!rawTranscript.includes('.whisper')) return [];
+		let filename: string | null = null;
+		if (rawTranscript.includes('.whisper')) {
+			const candidate = rawTranscript.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim();
+			if (candidate.toLowerCase().endsWith('.whisper')) {
+				filename = candidate;
+			}
+		}
 
-		let filename = rawTranscript.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim();
-		if (!filename.toLowerCase().endsWith('.whisper')) return [];
+		// No inline .whisper reference (or an empty/short # Transcript section) — fall back
+		// to a MacWhisper export auto-located by meeting filename in macWhisperTranscriptsDir,
+		// the same mechanism used for transcript expansion.
+		if (!filename) {
+			filename = this.voiceResolver.resolveWhisperForMeeting(file, rawTranscript);
+			if (!filename) return [];
+		}
 
 		try {
 			let buf: Buffer;
@@ -246,18 +282,31 @@ export class StandupMeetingHandler extends BaseMeetingHandler {
 		}
 	}
 
-	protected transformExpandedTranscript(rawTranscript: string, transcriptText: string): string {
-		return rawTranscript.includes('.whisper')
-			? `<!-- whisper-source -->\n${transcriptText}`
-			: transcriptText;
+	// transformExpandedTranscript() and shouldSkipSpeakerResolution() are inherited from
+	// BaseMeetingHandler — the <!-- whisper-source --> sentinel logic is meeting-type-agnostic
+	// and now lives there so GeneralMeetingHandler gets the same behavior.
+
+	/**
+	 * When the # Transcript section has no embed and no inline text, try to auto-locate a
+	 * MacWhisper export matching this meeting's filename in macWhisperTranscriptsDir — the
+	 * same mechanism GeneralMeetingHandler already uses. This lets standup meetings reach
+	 * post-meeting processing purely from an exported .whisper file, with no ![[...]] embed
+	 * ever typed into the note.
+	 */
+	protected async resolveNonEmbedTranscript(file: TFile, _content: string, _rawTranscript: string): Promise<{ text: string; sourceRef: string } | null> {
+		const whisperPath = this.voiceResolver.resolveWhisperForMeeting(file);
+		if (!whisperPath) {
+			console.log('[expandTranscriptEmbed] No embed and no matching whisper file, skipping');
+			return null;
+		}
+
+		console.log('[expandTranscriptEmbed] Found whisper file by meeting name:', whisperPath);
+		const resolved = await this.resolveTranscriptContent(whisperPath, true);
+		return resolved && resolved.length >= 20 ? { text: resolved, sourceRef: whisperPath } : null;
 	}
 
-	protected shouldSkipSpeakerResolution(rawTranscript: string): boolean {
-		if (rawTranscript.includes('<!-- whisper-source -->')) {
-			console.log('[resolveSpeakers] Transcript sourced from .whisper file — speaker names are authoritative, skipping modal');
-			return true;
-		}
-		return false;
+	protected shouldUseMacWhisperSource(): boolean {
+		return true;
 	}
 
 	protected async getAdditionalSpeakerCandidates(): Promise<Array<{ displayName: string; wikiLink: string }>> {
@@ -276,8 +325,8 @@ export class StandupMeetingHandler extends BaseMeetingHandler {
 		return this.app.vault.read(file);
 	}
 
-	protected async mergeSupplementalAttendees(content: string, extractedNames: string[]): Promise<string[]> {
-		const whisperNames = await this.extractWhisperSpeakers(content);
+	protected async mergeSupplementalAttendees(file: TFile, content: string, extractedNames: string[]): Promise<string[]> {
+		const whisperNames = await this.extractWhisperSpeakers(file, content);
 		if (whisperNames.length === 0) {
 			return extractedNames;
 		}

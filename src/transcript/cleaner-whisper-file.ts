@@ -30,6 +30,14 @@ import { TranscriptCleaner, SpeakerEntry } from './types';
  * Consecutive segments from the same named speaker are merged into a single block.
  * "Unknown" segments are never merged — each is kept as its own block since
  * consecutive unknowns may be different unidentified people.
+ *
+ * Some engines (e.g. Apple's native speech transcription, "modelEngine":
+ * "nativeSpeechTranscription") do not perform per-segment speaker diarization at all.
+ * In that case every segment omits `speaker` entirely, and the top-level `speakers[]`
+ * array contains at most one entry (the local mic user). This cleaner falls back to
+ * attributing all segments to that single known speaker, or to a generic "Speaker 1"
+ * label if there is no speaker info anywhere in the file — so downstream [Speaker N]
+ * resolution still has something to work with.
  */
 export class WhisperFileMetaCleaner implements TranscriptCleaner {
 
@@ -45,9 +53,6 @@ export class WhisperFileMetaCleaner implements TranscriptCleaner {
 			return (
 				Array.isArray(parsed.transcripts) &&
 				parsed.transcripts.length > 0 &&
-				typeof parsed.transcripts[0].speaker === 'object' &&
-				parsed.transcripts[0].speaker !== null &&
-				typeof parsed.transcripts[0].speaker.name === 'string' &&
 				typeof parsed.transcripts[0].text === 'string'
 			);
 		} catch {
@@ -59,7 +64,7 @@ export class WhisperFileMetaCleaner implements TranscriptCleaner {
 		const data: {
 			transcripts: Array<{
 				text: string;
-				speaker: { id: string; name: string; color: number };
+				speaker?: { id: string; name: string; color: number };
 			}>;
 			speakers?: Array<{ id: string; name: string; color: number }>;
 		} = JSON.parse(content.trim());
@@ -74,10 +79,17 @@ export class WhisperFileMetaCleaner implements TranscriptCleaner {
 			}
 		}
 
+		// Fallback name to use when a segment has no `speaker` field at all
+		// (engine didn't diarize). Prefer the sole known top-level speaker; otherwise
+		// use a generic label so [Speaker N] resolution still has something to match.
+		const fallbackName = Array.isArray(data.speakers) && data.speakers.length === 1 && data.speakers[0].name
+			? data.speakers[0].name
+			: 'Speaker 1';
+
 		const consolidated: SpeakerEntry[] = [];
 
 		for (const segment of data.transcripts) {
-			const rawName = (segment.speaker?.name ?? 'Unknown').trim();
+			const rawName = (segment.speaker?.name ?? fallbackName).trim();
 			const speaker = segment.speaker?.id
 				? (speakerMap.get(segment.speaker.id) ?? rawName)
 				: rawName;

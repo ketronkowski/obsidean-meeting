@@ -29,7 +29,6 @@ Key facts, dates, commitments shared.
 
 ## Output Format
 
-```markdown
 **Key Points:**
 - Discussion point 1
 - Discussion point 2
@@ -45,7 +44,12 @@ Key facts, dates, commitments shared.
 **Follow-up:**
 - Follow-up item 1
 - Follow-up item 2
-```
+
+**IMPORTANT:** Output the markdown directly as shown above — do NOT wrap it
+in a ```markdown code fence (the fence above is just illustrating the shape
+of the output, not part of it), and do NOT include any preamble/introduction
+sentence before it (e.g. "I'll analyze this meeting transcript..."). Start
+your response directly with `**Key Points:**`.
 
 ## Style Guidelines
 - Be concise and clear

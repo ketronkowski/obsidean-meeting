@@ -21,7 +21,7 @@ function escapeRegExp(value: string): string {
  */
 function findHeadingLineIndex(content: string, heading: string, level: number): number {
 	const prefix = getHeadingPrefix(level);
-	const match = new RegExp(`(?:^|\\n)${prefix} ${escapeRegExp(heading)}\\b`, '').exec(content);
+	const match = new RegExp(`(?:^|\\n)${prefix}[ \\t]+${escapeRegExp(heading)}\\b`, '').exec(content);
 	if (!match) return -1;
 	// Account for the leading \n captured by the alternation when not at the very start.
 	return match.index + (match[0].startsWith('\n') ? 1 : 0);
@@ -35,7 +35,7 @@ function findSection(content: string, heading: string, level: number): { heading
 	const afterHeading = content.indexOf('\n', headingIdx);
 	if (afterHeading === -1) return null;
 
-	const nextHeadingMatch = new RegExp(`\\n${prefix} [^#]`, 'g');
+	const nextHeadingMatch = new RegExp(`\\n${prefix}[ \\t]+[^#]`, 'g');
 	nextHeadingMatch.lastIndex = afterHeading;
 	const nextMatch = nextHeadingMatch.exec(content);
 	const sectionEnd = nextMatch ? nextMatch.index : content.length;
