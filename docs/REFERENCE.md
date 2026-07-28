@@ -280,10 +280,19 @@ Auto/Confirm rows each have a **"Skip"** checkbox (forces that row to be skipped
 disabling its dropdown/new-name input) and a **"Clear voice cache"** checkbox, gated by
 Skip: it stays disabled/unchecked until Skip is checked for that row, and is disabled +
 unchecked again if Skip is unchecked (Skip can be checked alone with no wipe). The
-**"Skip All"** button simply checks every row's "Skip" checkbox (and resets any Unresolved
-row's dropdown/typed name back to blank) — it does **not** close the modal, so the user can
-still uncheck individual rows or set "Clear voice cache" before finalizing. Nothing is
-deleted on checkbox click — **Apply** collects every row with "Clear voice cache" checked,
+Auto-identified, Needs-confirmation, and Unresolved-speakers sections are all
+**collapsible** (▶/▼ toggle in each section header, shared via `createCollapsibleSection()`)
+— Auto-identified defaults to collapsed (already resolved, nothing to do), while Needs
+confirmation and Unresolved speakers default to expanded (need attention). The
+**"Skip All"** and **"Clear all voice cache"** buttons live inline in the Needs-confirmation
+section's header (not the modal's global footer), so they stay visible/usable even while
+that section is collapsed. "Skip All" simply checks every row's "Skip" checkbox (and resets
+any Unresolved row's dropdown/typed name back to blank) — it does **not** close the modal,
+so the user can still uncheck individual rows or set "Clear voice cache" before finalizing.
+"Clear all voice cache" checks every currently-**enabled** "Clear voice cache" checkbox
+(i.e. rows whose "Skip" checkbox is already checked) — it never enables a disabled one
+itself, so pair it with "Skip All" first to affect every row. Nothing is deleted on
+checkbox click — **Apply** collects every row with "Clear voice cache" checked,
 shows one combined `window.confirm()` listing all the names to be deleted, and on confirm
 calls `forgetSpeaker()` (`DELETE /speakers/{name}`, or the `forget-speaker` CLI as a
 fallback) for each, with a summary `Notice`. Cancelling the combined confirm aborts the

@@ -112,25 +112,49 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	// Sections
 	// ---------------------------------------------------------------------------
 
-	private renderAutoSection(container: HTMLElement, speakers: VoiceSpeakerResult[]) {
+	/**
+	 * Renders a collapsible section shell shared by Auto/Confirm/Unresolved:
+	 * a header with a ▶/▼ toggle + title + optional hint text, and a body div
+	 * whose visibility that toggle controls. `defaultExpanded` controls the
+	 * section's initial state — Auto starts collapsed (already resolved,
+	 * nothing to do), Confirm/Unresolved start expanded (need attention).
+	 * Returns both the header (so callers can add inline action buttons that
+	 * stay visible even while collapsed) and the body (for per-speaker rows).
+	 */
+	private createCollapsibleSection(
+		container: HTMLElement,
+		titleText: string,
+		hint: string,
+		defaultExpanded: boolean,
+	): { header: HTMLElement; body: HTMLElement } {
 		const section = container.createDiv({ cls: 'voice-section' });
 
 		const header = section.createDiv({ cls: 'voice-section-header' });
-		const toggle = header.createEl('span', { text: '▶', cls: 'voice-section-toggle' });
-		header.createEl('strong', { text: ` ✓ Auto-identified (${speakers.length})` });
-		header.createEl('span', {
-			text: ' — expand to review or correct',
-			cls: 'voice-section-hint',
-		});
+		const toggle = header.createEl('span', { text: defaultExpanded ? '▼' : '▶', cls: 'voice-section-toggle' });
+		header.createEl('strong', { text: titleText });
+		if (hint) {
+			header.createEl('span', { text: hint, cls: 'voice-section-hint' });
+		}
 
 		const body = section.createDiv({ cls: 'voice-section-body' });
-		body.style.display = 'none';
+		body.style.display = defaultExpanded ? 'block' : 'none';
 
 		toggle.addEventListener('click', () => {
 			const hidden = body.style.display === 'none';
 			body.style.display = hidden ? 'block' : 'none';
 			toggle.textContent = hidden ? '▼' : '▶';
 		});
+
+		return { header, body };
+	}
+
+	private renderAutoSection(container: HTMLElement, speakers: VoiceSpeakerResult[]) {
+		const { body } = this.createCollapsibleSection(
+			container,
+			` ✓ Auto-identified (${speakers.length})`,
+			' — expand to review or correct',
+			false,
+		);
 
 		for (const s of speakers) {
 			const row = body.createDiv({ cls: 'voice-row' });
@@ -158,11 +182,26 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	}
 
 	private renderConfirmSection(container: HTMLElement, speakers: VoiceSpeakerResult[]) {
-		const section = container.createDiv({ cls: 'voice-section' });
-		section.createEl('strong', { text: `❓ Needs confirmation (${speakers.length})` });
+		const { header, body } = this.createCollapsibleSection(
+			container,
+			`❓ Needs confirmation (${speakers.length})`,
+			'',
+			true,
+		);
+
+		// "Skip All" and "Clear all voice cache" live here (rather than in the
+		// modal's global footer) since they act on every row's Skip/Clear-voice-
+		// cache checkbox across the whole modal, and this is the section users
+		// most often reach for them from. They sit in the header, not the
+		// collapsible body, so they stay usable even while collapsed.
+		const actions = header.createDiv({ cls: 'voice-section-actions' });
+		const skipBtn = actions.createEl('button', { text: 'Skip All', cls: 'mod-muted voice-inline-btn' });
+		skipBtn.addEventListener('click', () => { this.skipAllRows(); });
+		const clearAllBtn = actions.createEl('button', { text: 'Clear all voice cache', cls: 'mod-warning voice-inline-btn' });
+		clearAllBtn.addEventListener('click', () => { this.clearAllActiveWipeCheckboxes(); });
 
 		for (const s of speakers) {
-			const row = section.createDiv({ cls: 'voice-row' });
+			const row = body.createDiv({ cls: 'voice-row' });
 
 			row.createEl('span', { text: s.displayName, cls: 'voice-speaker-label' });
 			this.renderScoreBadge(row, s.score);
@@ -183,11 +222,15 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	}
 
 	private renderSkipSection(container: HTMLElement, speakers: VoiceSpeakerResult[]) {
-		const section = container.createDiv({ cls: 'voice-section' });
-		section.createEl('strong', { text: `🔍 Unresolved speakers (${speakers.length})` });
+		const { body } = this.createCollapsibleSection(
+			container,
+			`🔍 Unresolved speakers (${speakers.length})`,
+			'',
+			true,
+		);
 
 		for (const s of speakers) {
-			const row = section.createDiv({ cls: 'voice-row' });
+			const row = body.createDiv({ cls: 'voice-row' });
 			row.createEl('span', { text: s.displayName, cls: 'voice-speaker-label' });
 			this.renderPlayButton(row, s.speakerUuid);
 			this.renderSampleQuote(row, s.speakerUuid);
@@ -503,11 +546,12 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	// Buttons
 	// ---------------------------------------------------------------------------
 
+	// "Skip All" / "Clear all voice cache" now live inline in the "Needs
+	// confirmation" section header (renderConfirmSection) rather than here —
+	// they act on every row's Skip/Clear-voice-cache checkbox across the whole
+	// modal, but are placed where users most often reach for them.
 	private renderButtons(container: HTMLElement) {
 		const row = container.createDiv({ cls: 'voice-buttons' });
-
-		const skipBtn = row.createEl('button', { text: 'Skip All', cls: 'mod-muted' });
-		skipBtn.addEventListener('click', () => { this.skipAllRows(); });
 
 		const applyBtn = row.createEl('button', { text: 'Apply', cls: 'mod-cta' });
 		applyBtn.addEventListener('click', () => { this.applyAndClose(); });
@@ -537,6 +581,23 @@ export class VoiceSpeakerAttributionModal extends Modal {
 				if (select) select.value = '';
 				const input = this.inputEls.get(uuid);
 				if (input) input.value = '';
+			}
+		}
+	}
+
+	/**
+	 * "Clear all voice cache": checks every "Clear voice cache" checkbox that
+	 * is currently *active* (i.e. enabled — only true once that row's Skip
+	 * checkbox is checked). Doesn't touch disabled ones and doesn't check any
+	 * Skip boxes itself — pair with "Skip All" first if a row's Clear-voice-
+	 * cache checkbox needs to be enabled before this can select it. Like Skip
+	 * All, doesn't close the modal or wipe anything immediately — wipes are
+	 * still collected and confirmed once, in a batch, when Apply is clicked.
+	 */
+	private clearAllActiveWipeCheckboxes() {
+		for (const cb of this.wipeCheckboxEls.values()) {
+			if (!cb.disabled) {
+				cb.checked = true;
 			}
 		}
 	}

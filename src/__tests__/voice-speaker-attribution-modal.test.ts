@@ -743,5 +743,91 @@ describe('VoiceSpeakerAttributionModal.show()', () => {
 			// The modal must NOT resolve/close — Skip All only marks rows, Apply finalizes.
 			expect(resolved).toBeNull();
 		});
+
+		test('renderConfirmSection and renderSkipSection are collapsible and default to expanded', () => {
+			const response = {
+				speakers: [
+					{ speakerUuid: 'uuid-a', displayName: 'Speaker 1', bestMatch: 'Alice Smith', score: 0.78, action: 'confirm' as const },
+					{ speakerUuid: 'uuid-b', displayName: 'Speaker 2', bestMatch: null, score: 0.2, action: 'skip' as const },
+				],
+				knownSpeakers: ['Alice Smith'],
+			};
+			const modal = new VoiceSpeakerAttributionModal(mockApp, response, [], () => {});
+			const contentEl = document.createElement('div');
+			(modal as any).contentEl = contentEl;
+
+			(modal as any).renderConfirmSection(contentEl, [response.speakers[0]]);
+			(modal as any).renderSkipSection(contentEl, [response.speakers[1]]);
+
+			const sections = contentEl.querySelectorAll('.voice-section');
+			expect(sections.length).toBe(2);
+
+			for (const section of Array.from(sections)) {
+				const toggle = section.querySelector('.voice-section-toggle') as HTMLElement;
+				const body = section.querySelector('.voice-section-body') as HTMLElement;
+				expect(toggle.textContent).toBe('▼');
+				expect(body.style.display).toBe('block');
+
+				// Clicking the toggle collapses it, like the Auto-identified section.
+				toggle.dispatchEvent(new Event('click'));
+				expect(body.style.display).toBe('none');
+				expect(toggle.textContent).toBe('▶');
+			}
+		});
+
+		test('Skip All and Clear all voice cache buttons live in the Needs confirmation section header', () => {
+			const response = {
+				speakers: [
+					{ speakerUuid: 'uuid-a', displayName: 'Speaker 1', bestMatch: 'Alice Smith', score: 0.78, action: 'confirm' as const },
+				],
+				knownSpeakers: ['Alice Smith'],
+			};
+			const modal = new VoiceSpeakerAttributionModal(mockApp, response, [], () => {});
+			const contentEl = document.createElement('div');
+			(modal as any).contentEl = contentEl;
+			(modal as any).renderConfirmSection(contentEl, response.speakers);
+
+			const header = contentEl.querySelector('.voice-section-header') as HTMLElement;
+			const buttons = Array.from(header.querySelectorAll('button')).map(b => b.textContent);
+			expect(buttons).toEqual(['Skip All', 'Clear all voice cache']);
+		});
+
+		test('Clear all voice cache checks only currently-enabled wipe checkboxes', () => {
+			const response = {
+				speakers: [
+					{ speakerUuid: 'uuid-a', displayName: 'Speaker 1', bestMatch: 'Alice Smith', score: 0.78, action: 'confirm' as const },
+					{ speakerUuid: 'uuid-b', displayName: 'Speaker 2', bestMatch: 'Bob Jones', score: 0.7, action: 'confirm' as const },
+				],
+				knownSpeakers: ['Alice Smith', 'Bob Jones'],
+			};
+			const fakeClient = { getSpeakerClip: jest.fn(), forgetSpeaker: jest.fn() } as any;
+			const modal = new VoiceSpeakerAttributionModal(
+				mockApp,
+				response,
+				[],
+				() => {},
+				'/path/to/meeting.whisper',
+				fakeClient,
+			);
+			const contentEl = document.createElement('div');
+			(modal as any).contentEl = contentEl;
+			(modal as any).renderConfirmSection(contentEl, response.speakers);
+
+			// Only enable row a's wipe checkbox by checking its Skip checkbox first.
+			const skipCbA = (modal as any).skipCheckboxEls.get('uuid-a') as HTMLInputElement;
+			skipCbA.checked = true;
+			skipCbA.dispatchEvent(new Event('change'));
+
+			const wipeCbA = (modal as any).wipeCheckboxEls.get('uuid-a') as HTMLInputElement;
+			const wipeCbB = (modal as any).wipeCheckboxEls.get('uuid-b') as HTMLInputElement;
+			expect(wipeCbA.disabled).toBe(false);
+			expect(wipeCbB.disabled).toBe(true);
+
+			(modal as any).clearAllActiveWipeCheckboxes();
+
+			expect(wipeCbA.checked).toBe(true);
+			// Still disabled (Skip not checked for row b) — must not be selected.
+			expect(wipeCbB.checked).toBe(false);
+		});
 	});
 });
