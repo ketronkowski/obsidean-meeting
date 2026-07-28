@@ -664,7 +664,7 @@ describe('VoiceSpeakerAttributionModal.show()', () => {
 			expect(resolvedCalled).toBe(false);
 		});
 
-		test('Skip All also collects and wipes checked Clear-voice-cache rows before resolving', async () => {
+		test('finishWithWipes collects and wipes checked Clear-voice-cache rows before resolving (shared tail used by Apply)', async () => {
 			const fakeClient = {
 				getSpeakerClip: jest.fn(),
 				forgetSpeaker: jest.fn().mockResolvedValue(2),
@@ -705,6 +705,43 @@ describe('VoiceSpeakerAttributionModal.show()', () => {
 			expect(resolved).toEqual([]);
 			// wiping resets any other row assigned to the same name too
 			expect((modal as any).knownSpeakers).not.toContain('Alice Smith');
+		});
+
+		test('Skip All checks every row\'s Skip checkbox without closing the modal', async () => {
+			const response = {
+				speakers: [
+					{ speakerUuid: 'uuid-a', displayName: 'Speaker 1', bestMatch: 'Alice Smith', score: 0.78, action: 'confirm' as const },
+					{ speakerUuid: 'uuid-b', displayName: 'Speaker 2', bestMatch: null, score: 0.2, action: 'skip' as const },
+				],
+				knownSpeakers: ['Alice Smith'],
+			};
+			let resolved: any[] | null = null;
+			const modal = new VoiceSpeakerAttributionModal(
+				mockApp,
+				response,
+				[],
+				(assignments) => { resolved = assignments; },
+			);
+			const contentEl = document.createElement('div');
+			(modal as any).contentEl = contentEl;
+			(modal as any).renderConfirmSection(contentEl, [response.speakers[0]]);
+			(modal as any).renderSkipSection(contentEl, [response.speakers[1]]);
+
+			// Simulate the user picking a name for the Unresolved row before Skip All.
+			const unresolvedSelect = (modal as any).selectEls.get('uuid-b') as HTMLSelectElement;
+			unresolvedSelect.value = 'Alice Smith';
+			(modal as any).pending.set('uuid-b', 'Alice Smith');
+
+			(modal as any).skipAllRows();
+
+			const confirmSkipCb = (modal as any).skipCheckboxEls.get('uuid-a') as HTMLInputElement;
+			expect(confirmSkipCb.checked).toBe(true);
+			expect((modal as any).pending.get('uuid-a')).toBe('');
+			// Unresolved row (no Skip checkbox) is reset back to blank directly.
+			expect(unresolvedSelect.value).toBe('');
+			expect((modal as any).pending.get('uuid-b')).toBe('');
+			// The modal must NOT resolve/close — Skip All only marks rows, Apply finalizes.
+			expect(resolved).toBeNull();
 		});
 	});
 });

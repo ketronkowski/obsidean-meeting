@@ -123,7 +123,7 @@ export class VoiceSpeakerResolver {
 			// help the user identify who's who even before playing audio.
 			const sampleQuotes = await this.loadSampleQuotes(whisperPath);
 
-			// Show modal (auto-bypasses when all speakers ≥ 75% confidence).
+			// Show modal (auto-bypasses when all speakers ≥ 85% confidence).
 			// Pass whisperPath + voiceClient so the modal's Play buttons can
 			// lazily fetch audio clips via the daemon's /extract-clip endpoint.
 			const assignments = await VoiceSpeakerAttributionModal.show(

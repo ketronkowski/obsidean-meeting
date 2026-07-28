@@ -279,12 +279,15 @@ quote.)
 Auto/Confirm rows each have a **"Skip"** checkbox (forces that row to be skipped,
 disabling its dropdown/new-name input) and a **"Clear voice cache"** checkbox, gated by
 Skip: it stays disabled/unchecked until Skip is checked for that row, and is disabled +
-unchecked again if Skip is unchecked (Skip can be checked alone with no wipe). Nothing is
-deleted on checkbox click — both **Apply** and **Skip All** collect every row with "Clear
-voice cache" checked, show one combined `window.confirm()` listing all the names to be
-deleted, and on confirm call `forgetSpeaker()` (`DELETE /speakers/{name}`, or the
-`forget-speaker` CLI as a fallback) for each, with a summary `Notice`. Cancelling the
-combined confirm aborts the whole Apply/Skip-All action.
+unchecked again if Skip is unchecked (Skip can be checked alone with no wipe). The
+**"Skip All"** button simply checks every row's "Skip" checkbox (and resets any Unresolved
+row's dropdown/typed name back to blank) — it does **not** close the modal, so the user can
+still uncheck individual rows or set "Clear voice cache" before finalizing. Nothing is
+deleted on checkbox click — **Apply** collects every row with "Clear voice cache" checked,
+shows one combined `window.confirm()` listing all the names to be deleted, and on confirm
+calls `forgetSpeaker()` (`DELETE /speakers/{name}`, or the `forget-speaker` CLI as a
+fallback) for each, with a summary `Notice`. Cancelling the combined confirm aborts the
+whole Apply action.
 
 The `<!-- whisper-source -->` sentinel (§4.4/§6.1) is written whenever the transcript came
 from a `.whisper` file, **whether via an explicit `![[...]].whisper]]` embed or an
@@ -330,6 +333,13 @@ reference embeddings.
 - `score ≥ 0.75` → **auto**
 - `0.50 ≤ score < 0.75` → **confirm**
 - `score < 0.50` → **skip**
+
+> **Note:** the daemon's own thresholds above only affect its raw `action` field;
+> the plugin client-side ignores it and reclassifies every speaker from the raw
+> `score` using its own thresholds (`classifySpeakerAction()` in
+> `src/voice-analysis-client.ts`): `score ≥ 0.85` → auto, `score < 0.65` →
+> unresolved/skip, otherwise → confirm. This lets the plugin's auto/confirm/
+> unresolved cutoffs be tuned independently of the daemon.
 
 **Filesystem paths**
 

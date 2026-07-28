@@ -2,7 +2,8 @@ import { App, Modal, Notice } from 'obsidian';
 import { VoiceAnalysisResponse, VoiceNameAssignment, VoiceSpeakerResult } from '../voice-analysis-types';
 import { VoiceAnalysisClient } from '../voice-analysis-client';
 
-const AUTO_THRESHOLD = 0.75;
+const AUTO_THRESHOLD = 0.85;
+const UNRESOLVED_THRESHOLD = 0.65;
 
 /**
  * Modal for resolving speakers using voice analysis results from whisper-speaker-id.
@@ -276,8 +277,8 @@ export class VoiceSpeakerAttributionModal extends Modal {
 
 	private renderScoreBadge(container: HTMLElement, score: number) {
 		const pct = Math.round(score * 100);
-		const cls = pct >= 75 ? 'voice-score-high'
-			: pct >= 50 ? 'voice-score-mid'
+		const cls = score >= AUTO_THRESHOLD ? 'voice-score-high'
+			: score >= UNRESOLVED_THRESHOLD ? 'voice-score-mid'
 			: 'voice-score-low';
 		container.createEl('span', {
 			text: `Voice match: ${pct}%`,
@@ -316,8 +317,10 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	 * - "Clear voice cache": gated by Skip — starts disabled/unchecked, and
 	 *   can only be checked while Skip is checked. Doesn't delete anything
 	 *   immediately; marked rows are collected and wiped in one batch when
-	 *   Apply/Skip All is clicked (see `finishWithWipes`). Only rendered
-	 *   when a voice client is available (nothing to wipe against otherwise).
+	 *   Apply is clicked (see `finishWithWipes`) — "Skip All" only checks
+	 *   every row's Skip checkbox, it does not itself finalize or wipe.
+	 *   Only rendered when a voice client is available (nothing to wipe
+	 *   against otherwise).
 	 */
 	private renderSkipAndWipeCheckboxes(
 		container: HTMLElement,
@@ -504,10 +507,38 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		const row = container.createDiv({ cls: 'voice-buttons' });
 
 		const skipBtn = row.createEl('button', { text: 'Skip All', cls: 'mod-muted' });
-		skipBtn.addEventListener('click', () => { this.finishWithWipes([]); });
+		skipBtn.addEventListener('click', () => { this.skipAllRows(); });
 
 		const applyBtn = row.createEl('button', { text: 'Apply', cls: 'mod-cta' });
 		applyBtn.addEventListener('click', () => { this.applyAndClose(); });
+	}
+
+	/**
+	 * "Skip All": checks every row's "Skip" checkbox (Auto/Confirm rows) and
+	 * resets any Unresolved row's dropdown/typed name back to blank — it does
+	 * NOT close the modal. This lets the user see every row marked as skipped,
+	 * still uncheck individual ones they want to keep identifying, and/or still
+	 * check "Clear voice cache" on any row, before clicking Apply to finalize.
+	 */
+	private skipAllRows() {
+		for (const s of this.response.speakers) {
+			const uuid = s.speakerUuid;
+			const skipCb = this.skipCheckboxEls.get(uuid);
+			if (skipCb) {
+				if (!skipCb.checked) {
+					skipCb.checked = true;
+					skipCb.dispatchEvent(new Event('change'));
+				}
+			} else {
+				// Unresolved rows have no Skip checkbox — they default to skip via a
+				// blank dropdown, so just reset the controls directly.
+				this.pending.set(uuid, '');
+				const select = this.selectEls.get(uuid);
+				if (select) select.value = '';
+				const input = this.inputEls.get(uuid);
+				if (input) input.value = '';
+			}
+		}
 	}
 
 	private applyAndClose() {
@@ -525,11 +556,12 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	}
 
 	/**
-	 * Shared tail end of both "Apply" and "Skip All": collect any rows whose
-	 * "Clear voice cache" checkbox is checked, confirm once with the user
-	 * (listing every name to be deleted), delete them via the voice client,
-	 * show a summary Notice, then resolve the modal's promise with
-	 * `assignments` and close.
+	 * Tail end of "Apply" (Skip All no longer routes through here — it only
+	 * checks Skip checkboxes so the user can review/adjust before finalizing):
+	 * collect any rows whose "Clear voice cache" checkbox is checked, confirm
+	 * once with the user (listing every name to be deleted), delete them via
+	 * the voice client, show a summary Notice, then resolve the modal's
+	 * promise with `assignments` and close.
 	 *
 	 * If the user cancels the combined confirm, the whole action (including
 	 * the name assignments) is aborted — the modal stays open so the user

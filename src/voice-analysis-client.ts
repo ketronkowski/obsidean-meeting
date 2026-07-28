@@ -279,16 +279,37 @@ export class VoiceAnalysisClient {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Confidence thresholds used to (re)classify each speaker's action, overriding
+// whatever action the daemon itself assigned. Kept here (client-side) so the
+// plugin's auto/confirm/unresolved cutoffs can be tuned independently of the
+// whisper-speaker-id daemon's own defaults.
+//   score >= AUTO_MATCH_THRESHOLD        -> 'auto'      (assigned without review)
+//   score <  UNRESOLVED_MATCH_THRESHOLD  -> 'skip'       (shown as "Unresolved")
+//   otherwise                             -> 'confirm'    (pre-filled, needs review)
+const AUTO_MATCH_THRESHOLD = 0.85;
+const UNRESOLVED_MATCH_THRESHOLD = 0.65;
+
+function classifySpeakerAction(score: number, bestMatch: string | null): 'auto' | 'confirm' | 'skip' {
+	if (!bestMatch) return 'skip';
+	if (score >= AUTO_MATCH_THRESHOLD) return 'auto';
+	if (score < UNRESOLVED_MATCH_THRESHOLD) return 'skip';
+	return 'confirm';
+}
+
 function transformAnalyzeResponse(raw: Record<string, unknown>): VoiceAnalysisResponse {
 	const rawSpeakers = raw['speakers'] as Array<Record<string, unknown>>;
 	return {
-		speakers: rawSpeakers.map(s => ({
-			speakerUuid: s['speaker_uuid'] as string,
-			displayName: s['display_name'] as string,
-			bestMatch: (s['best_match'] as string | null) ?? null,
-			score: s['score'] as number,
-			action: s['action'] as 'auto' | 'confirm' | 'skip',
-		})),
+		speakers: rawSpeakers.map(s => {
+			const bestMatch = (s['best_match'] as string | null) ?? null;
+			const score = s['score'] as number;
+			return {
+				speakerUuid: s['speaker_uuid'] as string,
+				displayName: s['display_name'] as string,
+				bestMatch,
+				score,
+				action: classifySpeakerAction(score, bestMatch),
+			};
+		}),
 		knownSpeakers: (raw['known_speakers'] as string[]) ?? [],
 	};
 }

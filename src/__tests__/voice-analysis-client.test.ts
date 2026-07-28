@@ -82,6 +82,48 @@ describe('VoiceAnalysisClient', () => {
 	});
 
 	// -------------------------------------------------------------------------
+	// Client-side action reclassification (score >= 0.85 -> auto,
+	// score < 0.65 -> skip/unresolved, otherwise -> confirm), overriding
+	// whatever `action` the daemon itself sent.
+	// -------------------------------------------------------------------------
+
+	test('reclassifies action from score, ignoring the daemon\'s own action field', async () => {
+		const daemon = await createMockDaemon({
+			analyzeResponse: {
+				speakers: [
+					// Daemon says 'auto' but score is below the plugin's 0.85 auto cutoff.
+					{ speakerUuid: 'a', displayName: 'Speaker 1', bestMatch: 'Alice Smith', score: 0.80, action: 'auto' },
+					// Right at the auto cutoff.
+					{ speakerUuid: 'b', displayName: 'Speaker 2', bestMatch: 'Bob Jones', score: 0.85, action: 'confirm' },
+					// Just below the unresolved cutoff.
+					{ speakerUuid: 'c', displayName: 'Speaker 3', bestMatch: 'Carol White', score: 0.64, action: 'confirm' },
+					// Right at the unresolved cutoff (belongs to confirm, not skip).
+					{ speakerUuid: 'd', displayName: 'Speaker 4', bestMatch: 'Dana Lee', score: 0.65, action: 'skip' },
+					// High score but no match at all — always skip regardless of score.
+					{ speakerUuid: 'e', displayName: 'Speaker 5', bestMatch: null, score: 0.99, action: 'auto' },
+				],
+				knownSpeakers: ['Alice Smith', 'Bob Jones', 'Carol White', 'Dana Lee'],
+			},
+		});
+		const client = new VoiceAnalysisClient({
+			enabled: true,
+			binaryPath: 'whisper-speaker-id',
+			port: daemon.port,
+			autoStart: false,
+		});
+
+		const result = await client.analyzeWhisperFile('/test/meeting.whisper');
+
+		expect(result!.speakers[0].action).toBe('confirm'); // 0.80 < 0.85 -> not auto
+		expect(result!.speakers[1].action).toBe('auto');    // 0.85 -> auto
+		expect(result!.speakers[2].action).toBe('skip');    // 0.64 < 0.65 -> unresolved
+		expect(result!.speakers[3].action).toBe('confirm'); // 0.65 -> confirm, not skip
+		expect(result!.speakers[4].action).toBe('skip');    // no bestMatch -> always skip
+
+		await daemon.close();
+	});
+
+	// -------------------------------------------------------------------------
 	// applyNames — payload verification
 	// -------------------------------------------------------------------------
 
