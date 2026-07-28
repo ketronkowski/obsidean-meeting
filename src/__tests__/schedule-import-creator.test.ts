@@ -131,10 +131,12 @@ describe('createScheduleNote', () => {
 		expect(content).toContain('start: "11:00 AM"');
 		expect(content).toContain('end: "11:30 AM"');
 		expect(content).toContain('organizer: "[[Meller, Jonathan|Jonathan Meller]]"');
-		expect(content).toContain('# Attendees\n\n- [[Meller, Jonathan|Jonathan Meller]]');
+		// Organizer is only recorded in frontmatter — not added to the # Attendees
+		// section (that section is left to normal attendee processing).
+		expect(content).not.toContain('- [[Meller, Jonathan|Jonathan Meller]]');
 	});
 
-	test('creates a Green Standup note from Green Standup Notes.md, prepending organizer to the default roster, keeping the real title as filename', async () => {
+	test('creates a Green Standup note from Green Standup Notes.md with organizer only in frontmatter, keeping the real title as filename', async () => {
 		const app = makeApp([], { 'Templates/Green Standup Notes.md': GREEN_STANDUP_TEMPLATE });
 		const settings = makeSettings();
 		const people = makePeopleManager();
@@ -148,7 +150,10 @@ describe('createScheduleNote', () => {
 		// handled by adding "Green Team Daily Meeting" to standupKeywords.
 		expect(result.path).toBe('Meetings/2026-07-28 - Green Team Daily Meeting.md');
 		const content = app._created[result.path];
-		expect(content).toContain('- [[Piddington, Ila|Ila Piddington]]\n- [[Kevin Tronkowski]]');
+		expect(content).toContain('organizer: "[[Piddington, Ila|Ila Piddington]]"');
+		// Default roster stays untouched — organizer is not prepended to it.
+		expect(content).toContain('- [[Kevin Tronkowski]]\n- [[Ryan Bennett]]');
+		expect(content).not.toContain('- [[Piddington, Ila|Ila Piddington]]');
 		expect(content).toContain('# JIRA');
 	});
 

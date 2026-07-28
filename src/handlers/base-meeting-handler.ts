@@ -268,13 +268,19 @@ export abstract class BaseMeetingHandler {
 
 		const currentContent = await this.getAttendeeProcessingContent(file, content);
 		const attendeesContent = getSection(currentContent, 'Attendees');
+		const screenshots = this.extractScreenshotReferences(attendeesContent);
+		const hasExistingWikiLinks = this.shouldSkipAttendeeProcessing(attendeesContent);
 
-		if (this.shouldSkipAttendeeProcessing(attendeesContent)) {
-			console.log('Attendees section already has wiki-links — skipping attendee processing');
+		// Only skip entirely when there's nothing new to look at — existing wiki-links
+		// with no screenshots present means this section was already processed. If
+		// screenshots ARE present, keep going even when wiki-links already exist: large
+		// meetings can have several screenshots added over time, and each one should be
+		// considered (merged into, not replacing, whatever attendees are already listed).
+		if (hasExistingWikiLinks && screenshots.length === 0) {
+			console.log('Attendees section already has wiki-links and no screenshots — skipping attendee processing');
 			return;
 		}
 
-		const screenshots = this.extractScreenshotReferences(attendeesContent);
 		let extractedNames: string[] = [];
 
 		if (screenshots.length > 0) {
@@ -284,16 +290,82 @@ export abstract class BaseMeetingHandler {
 
 		extractedNames = await this.mergeSupplementalAttendees(file, currentContent, extractedNames);
 
-		if (extractedNames.length === 0) {
+		// Content-extraction fallback only makes sense when nothing is already listed —
+		// if wiki-linked attendees already exist, re-scanning the whole note's content
+		// would just reintroduce noise instead of complementing the existing list.
+		if (extractedNames.length === 0 && !hasExistingWikiLinks) {
 			console.log('Falling back to content extraction');
 			extractedNames = await this.extractFromContent(currentContent);
 		}
 
-		if (extractedNames.length > 0) {
-			console.log(`Extracted ${extractedNames.length} attendees:`, extractedNames);
-			await this.updateAttendeesSection(file, extractedNames);
+		// Merge newly extracted names with whatever attendees are already wiki-linked in
+		// the section, deduping case-insensitively so re-running this doesn't double up.
+		const existingNames = this.extractExistingAttendeeNames(attendeesContent);
+		const mergedNames = this.dedupeNames([...existingNames, ...extractedNames]);
+
+		if (mergedNames.length > 0) {
+			console.log(`Extracted ${mergedNames.length} attendees (existing + new):`, mergedNames);
+			await this.updateAttendeesSection(file, mergedNames);
+			if (screenshots.length > 0) {
+				await this.deleteScreenshotFiles(file, screenshots);
+			}
 		} else {
 			console.log('No attendees extracted');
+		}
+	}
+
+	/**
+	 * Parses the display names already wiki-linked in the Attendees section
+	 * (e.g. `- [[Last, First|First Last]]` -> "First Last", `- [[Some Name]]` ->
+	 * "Some Name"), skipping image embeds (`![[...]]`). Used to merge newly
+	 * screenshot-extracted attendees into an already-populated section instead
+	 * of clobbering it.
+	 */
+	protected extractExistingAttendeeNames(attendeesContent: string): string[] {
+		const names: string[] = [];
+		const linkPattern = /(?<!!)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+		let match;
+		while ((match = linkPattern.exec(attendeesContent)) !== null) {
+			const display = (match[2] || match[1]).trim();
+			if (display) names.push(display);
+		}
+		return names;
+	}
+
+	/**
+	 * Case-insensitive dedupe that preserves first-seen casing/order.
+	 */
+	protected dedupeNames(names: string[]): string[] {
+		const seen = new Set<string>();
+		const result: string[] = [];
+		for (const raw of names) {
+			const name = raw.trim();
+			const key = name.toLowerCase();
+			if (name && !seen.has(key)) {
+				seen.add(key);
+				result.push(name);
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * Deletes the underlying screenshot attachment files from the vault after
+	 * their attendee names have been extracted and merged into the Attendees
+	 * section — the screenshots have served their purpose and don't need to
+	 * remain as vault attachments.
+	 */
+	protected async deleteScreenshotFiles(file: TFile, screenshots: string[]): Promise<void> {
+		for (const screenshot of screenshots) {
+			try {
+				const imageFile = this.app.metadataCache.getFirstLinkpathDest(screenshot, file.path);
+				if (imageFile) {
+					await this.app.vault.delete(imageFile);
+					console.log(`Deleted processed screenshot: ${imageFile.path}`);
+				}
+			} catch (error) {
+				console.error(`Error deleting screenshot ${screenshot}:`, error);
+			}
 		}
 	}
 

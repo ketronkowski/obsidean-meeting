@@ -1,7 +1,6 @@
 import { App, TFile } from 'obsidian';
 import { MeetingProcessorSettings } from '../ui/settings-tab';
 import { PeopleManager } from '../people-manager';
-import { getSection, replaceSection } from '../section-utils';
 import { ParsedScheduleItem } from './parser';
 import { sanitizeMeetingTitle } from './filename';
 
@@ -64,8 +63,10 @@ function injectFrontmatter(content: string, extraLines: string[]): string {
  *  - loads the correct vault template (Green Standup vs. general Meeting Notes)
  *  - stamps `when`, `start`, `end` (simple 12-hour clock times, e.g. "11:00 AM"),
  *    and `organizer` frontmatter
- *  - resolves (or creates) the organizer's People profile and links it as the
- *    first `# Attendees` entry, in addition to the `organizer` frontmatter key
+ *  - resolves (or creates) the organizer's People profile and links it via the
+ *    `organizer` frontmatter key only — the organizer is NOT added to the
+ *    `# Attendees` section; regular attendee processing (screenshots/content
+ *    scan) handles that section independently
  *  - skips creation if the target path already exists (duplicate handling)
  */
 export async function createScheduleNote(
@@ -92,14 +93,6 @@ export async function createScheduleNote(
 		`end: "${item.endTime}"`,
 		`organizer: "${organizerLink}"`,
 	]);
-
-	// Prepend the organizer as the first # Attendees entry, ahead of whatever
-	// the template already lists (e.g. Green Standup's default roster).
-	const existingAttendees = getSection(body, 'Attendees', 1);
-	const newAttendees = existingAttendees
-		? `- ${organizerLink}\n${existingAttendees}`
-		: `- ${organizerLink}`;
-	body = replaceSection(body, 'Attendees', newAttendees, 1);
 
 	const folder = app.vault.getAbstractFileByPath(meetingsFolder);
 	if (!folder) {
