@@ -31,8 +31,9 @@ external processes:
 - **GitHub Copilot CLI** (`copilot -p <prompt>`) — all AI text/vision generation.
 - **whisper-speaker-id** — spawned as a detached HTTP daemon (or one-shot CLI fallback) for voice ID.
 
-JIRA is reached directly over its REST API (no AI, no MCP) using Obsidian's
-`requestUrl()`.
+JIRA is reached preferentially via the `jira` CLI (spawned like the other CLIs
+below, auth token resolved from settings/env/shell), falling back to its direct
+REST API (no AI, no MCP) using Obsidian's `requestUrl()`.
 
 ```
                     ┌────────────────────────── Obsidian (Electron) ──────────────────────────┐
@@ -106,7 +107,7 @@ A standup without it throws.
 ### 4.1 Attendee sources
 | Source | Detection | How it's read |
 |--------|-----------|---------------|
-| **Teams screenshots** (preferred) | `![[SCR-*.png]]` embeds | Each image path is resolved to an absolute path and sent to Copilot CLI vision (`analyzeImageWithCLI`), which returns a comma-separated name list. |
+| **Teams screenshots** (preferred) | `![[SCR-*.png]]` embeds | Each image path is resolved to an absolute path and sent to Copilot CLI vision (`analyzeImageWithCLI`), which returns a comma-separated name list. `parseScreenshotNames()` also detects and re-pairs a `"Last, First, Last, First, …"` response shape (an even count of single-word comma-separated tokens) into `"First Last"` names before filtering — some vision responses return this pair form instead of the requested `"First Last"` format, which previously caused 0 attendees to be extracted. |
 | **`.whisper` speakers array** | present when a recording is matched | After voice ID, the real names in `metadata.json → speakers[]` are merged into the attendee list (standup handler `extractWhisperSpeakers`). |
 | **Content scan** (fallback) | no screenshots | Copilot extracts likely names from note body; filtered by `isValidPersonName`. |
 | **Email headers** (email chains only) | `From/To/Cc` lines | `email-parser.ts` — see §7. |
@@ -206,11 +207,11 @@ standups).
 3. **Voice ID** (if `voiceServiceEnabled`): `VoiceSpeakerResolver.identifyWhisperSpeakers` — see §8. Runs *before* the embed is expanded.
 4. **Expand transcript** (`expandTranscriptEmbed`): resolve embed / auto-found `.whisper` → cleaned inline text.
 5. **Resolve speakers** (`resolveSpeakers`): map residual `[Speaker N]` → real names (text heuristics + modal). Skipped when a `<!-- whisper-source -->` sentinel indicates voice ID already resolved names.
-6. **Clean transcript** (`cleanTranscript`) — only if no `# Copilot Summary` and `autoCleanTranscript`.
+6. **Clean transcript** (`cleanTranscript`) — only if no `# Copilot Summary` and `autoCleanTranscript`. Also skipped (independently of the summary check) when the `<!-- whisper-source -->` sentinel is present — `expandTranscriptEmbed` already ran the correct cleaner on this content before prepending the sentinel, so re-running `TranscriptDetector.detectAndClean()` here would corrupt it (see §7.2 note below). When skipping for this reason, `cleanTranscript` also strips the now-unneeded sentinel line from the note so it isn't left visible in the final transcript.
 7. **Generate summary** (`generateSummary`) → `# Summary`.
 
 ### 6.2 Standup — pre-meeting (`detectMode` → transcript empty / < 50 chars & no file ref)
-1. `JiraManager.queryAndFormatSprint(boardId, projectKey, team)` → formatted `# JIRA` section.
+1. `JiraManager.queryAndFormatSprint(boardId, projectKey, team)` → tries `JiraCliClient` first (falls back to `JiraApiClient` REST on failure) → formatted `# JIRA` section.
 2. Insert/replace `# JIRA` (after `# Attendees`, else after frontmatter) via `insertJiraSection`, built on the shared `upsertSection` utility.
 
 ### 6.3 Standup — post-meeting (transcript has content or a file reference)
@@ -265,7 +266,42 @@ stray headings) before being written to `# Summary`.
 
 The modal also offers a **▶ Play** button per speaker that lazily fetches a clip via
 `POST /extract-clip` and plays it through one shared `<audio>` element (see the daemon's
-`CLAUDE.md` for the bounds-guard detail).
+CLAUDE.md for the bounds-guard detail). Each row also shows a short italic sample-quote
+excerpt (`extractWhisperSampleQuotes()`, `src/transcript/whisper-sample-quotes.ts`),
+selected by **segment duration** (mirroring the daemon's `best_segment_for_playback`/
+`longest_segment_by_speaker`, including its ms-vs-seconds timestamp normalization) rather
+than by text length, so the displayed quote matches what the ▶ Play clip actually plays in
+the common case. (The daemon additionally bounds candidates to the real audio duration as a
+defense against corrupted timestamp units — the plugin-side extractor has no access to that
+and can't replicate it, so a rare corrupted-timestamp file could still show a mismatched
+quote.)
+
+Auto/Confirm rows each have a **"Skip"** checkbox (forces that row to be skipped,
+disabling its dropdown/new-name input) and a **"Clear voice cache"** checkbox, gated by
+Skip: it stays disabled/unchecked until Skip is checked for that row, and is disabled +
+unchecked again if Skip is unchecked (Skip can be checked alone with no wipe). Nothing is
+deleted on checkbox click — both **Apply** and **Skip All** collect every row with "Clear
+voice cache" checked, show one combined `window.confirm()` listing all the names to be
+deleted, and on confirm call `forgetSpeaker()` (`DELETE /speakers/{name}`, or the
+`forget-speaker` CLI as a fallback) for each, with a summary `Notice`. Cancelling the
+combined confirm aborts the whole Apply/Skip-All action.
+
+The `<!-- whisper-source -->` sentinel (§4.4/§6.1) is written whenever the transcript came
+from a `.whisper` file, **whether via an explicit `![[...]].whisper]]` embed or an
+auto-found-by-meeting-filename match** (no embed present in the note) — both paths pass the
+resolved `.whisper` reference through `writeExpandedTranscript`, so `resolveSpeakers` will
+correctly skip re-opening the text-heuristic `SpeakerAttributionModal` in either case.
+`cleanTranscript` also checks for the sentinel and skips re-cleaning entirely: without this
+guard, re-running `TranscriptDetector.detectAndClean()` on the already-clean,
+sentinel-prefixed text false-positively matches `GoogleRecorderCleaner` (its `canHandle()`
+matches any `[text]` on its own line), whose `clean()` treats any content preceding the
+first `[Speaker]` line as "preamble" merged into that speaker's first utterance — corrupting
+the transcript into `[Name]\n<!-- whisper-source --> First words...` instead of leaving the
+sentinel on its own line. Once `cleanTranscript` confirms it's skipping the re-clean, it also
+**strips the sentinel from the note** (a single-line regex removal, written back via
+`replaceSection`) rather than leaving the HTML comment visible in the transcript forever —
+by that point in the pipeline both consumers (`resolveSpeakers`'s modal-skip and
+`cleanTranscript`'s own re-clean-skip) have already used it, so it has served its purpose.
 
 All localhost HTTP uses Node's built-in `http` module (not `fetch`) to bypass Electron's
 CSP.
@@ -347,11 +383,29 @@ active skill changes prompts after an Obsidian reload without recompiling.
 ---
 
 ## 11. JIRA integration
-`JiraApiClient` (Basic Auth via `requestUrl`): get the active sprint for the board
+`JiraManager.queryAndFormatSprint()` tries `JiraCliClient` first (when
+`settings.jiraCliEnabled`, default on): resolves `JIRA_API_TOKEN` via
+`shell-env-token.ts`'s `resolveJiraApiToken()` (`process.env.JIRA_API_TOKEN` →
+cached shell-captured value from `$SHELL -ilc 'printf "%s" "$JIRA_API_TOKEN"'`
+(needed because Obsidian launched via Launchpad/Spotlight doesn't inherit
+`~/.zshrc` exports) → `settings.jiraApiToken` as a last resort — checked last
+because it's shared with the REST fallback and can go stale independently; a
+stale value there must not shadow a working shell-captured token), then resolves
+the active sprint id via
+`jira sprint list --state active --plain --no-headers --columns ID,NAME,STATE`
+(board-scoped entirely by the `jira` CLI's own `jira init` config — there's no
+`--board` flag, and `sprint list --raw` doesn't actually produce JSON despite the
+flag existing), then spawns `jira issue list -q "sprint in (<id>)" --raw`. This is
+deliberately *not* `project = <KEY> AND sprint in openSprints()` — that JQL is
+unscoped to any board/team and returns every open sprint across the whole project
+(every team sharing it). On any `JiraCliError` (binary missing, non-zero exit incl.
+`401`, no active sprint, timeout, bad JSON), falls back to `JiraApiClient` (Basic Auth via
+`requestUrl`): get the active sprint for the board
 (`/rest/agile/1.0/board/{id}/sprint?state=active`; if several, prefer one whose name
 contains the team), then its issues (`.../sprint/{id}/issue`, fields
-`summary,status,assignee,issuetype`). `JiraFormatter` renders per-assignee `###` groups
-of checkbox lines:
+`summary,status,assignee,issuetype`). `JiraFormatter` prepends a one-line legend
+(`**Key:** ...`, spelling out every icon/emoji below), then renders per-assignee `###`
+groups of checkbox lines:
 
 ```
 - [ ] {typeIcon} {statusEmoji} [KEY](url) - {summary} ({status})
@@ -377,7 +431,9 @@ Status emoji: ✅ done/closed · 🟢 in-progress · 🟡 review/testing · 🔴
 | `templatesFolder` | `Templates` | templates |
 | `autoCreateProfiles` | `true` | create People profiles for attendees |
 | `autoCleanTranscript` | `true` | clean transcript unless `# Copilot Summary` present |
-| `jiraEmail` / `jiraApiToken` / `jiraBaseUrl` | `""` / `""` / `https://hpe.atlassian.net` | JIRA Basic Auth |
+| `jiraEmail` / `jiraApiToken` / `jiraBaseUrl` | `""` / `""` / `https://hpe.atlassian.net` | JIRA REST fallback Basic Auth (CLI path reads `JIRA_API_TOKEN` from env/shell instead) |
+| `jiraCliEnabled` | `true` | prefer `jira` CLI over REST for sprint queries |
+| `jiraCliPath` | `jira` | path to `jira` CLI executable |
 | `greenBoardId` | `214` | sprint board |
 | `jiraProjectKey` | `GLCP` | project key |
 | `standupKeywords` | `Green Standup` | standup detection |
@@ -436,6 +492,6 @@ Daemon: `cd ~/git/whisper-speaker-id && .venv/bin/pytest -q` (37 tests across
 | Speakers (text) | `src/speaker-resolver.ts`, `src/ui/speaker-attribution-modal.ts` |
 | AI / skills | `src/copilot-client.ts`, `src/skill-loader.ts`, `src/output-cleaner.ts`, `skills/*.md` (3 active), `docs/legacy-skills/*.md` (6 unused, kept for reference) |
 | People / email | `src/people-manager.ts`, `src/email-parser.ts` |
-| JIRA | `src/jira/{api-client,client,extractor,formatter,manager}.ts` |
+| JIRA | `src/jira/{cli-client,shell-env-token,api-client,client,extractor,formatter,manager}.ts` |
 | UI | `src/ui/{settings-tab,status-bar,copilot-working-modal}.ts` |
 

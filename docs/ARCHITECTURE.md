@@ -21,7 +21,8 @@ MeetingRouter.process()
         │                     │
         │                     ├── detectTeam() → boardId
         │                     ├── [pre-meeting] JiraManager.queryAndFormatSprint()
-        │                     │                 JiraApiClient → JIRA REST API
+        │                     │                 JiraCliClient (preferred) → `jira` CLI
+        │                     │                 JiraApiClient (fallback) → JIRA REST API
         │                     │                 JiraFormatter → markdown section
         │                     └── [post-meeting] attendees + transcript + summary
         │                                         JiraKeyExtractor → checkbox updates
@@ -110,7 +111,8 @@ overrides above.
 Two modes based on transcript presence, decided by `detectMode()`:
 
 **Pre-meeting** (transcript empty/short):
-1. Query JIRA active sprint → format → insert `# JIRA` section (via
+1. Query JIRA active sprint (`JiraManager` — CLI-first via `JiraCliClient`, REST fallback
+   via `JiraApiClient`) → format → insert `# JIRA` section (via
    `insertJiraSection`, built on the shared `upsertSection` utility)
 
 **Post-meeting** (transcript present):
@@ -156,12 +158,62 @@ the default level 1.
 
 ```
 JiraManager
-    └── JiraApiClient        HTTP calls to Atlassian Agile REST API
+    └── JiraCliClient        Preferred: spawns `jira issue list --raw` CLI
+    │       └── shell-env-token.ts   Resolves JIRA_API_TOKEN (settings → env → shell capture)
+    └── JiraApiClient        Fallback: HTTP calls to Atlassian Agile REST API
     └── JiraFormatter        Markdown rendering
     └── (JiraKeyExtractor)   Used directly by StandupMeetingHandler
 ```
 
-**`JiraApiClient`** flow:
+**`JiraManager.queryAndFormatSprint()` flow** (CLI-first, REST-fallback):
+1. If `settings.jiraCliEnabled` (default `true`), call
+   `JiraCliClient.searchActiveSprintIssues(teamName, maxResults)`.
+2. On success, skip straight to formatting. On any thrown `JiraCliError`
+   (binary not found, non-zero exit incl. `401`, no active sprint, timeout, bad JSON),
+   `console.warn` the reason and fall through to step 3.
+3. Call the existing `JiraApiClient.searchBoardSprintIssues(boardId, teamName, 100)`
+   REST flow, unchanged from before this feature.
+4. If *both* paths fail, the final catch-all still produces the
+   `⚠️ Error querying JIRA...` string inserted into the note.
+
+**`JiraCliClient`** flow (`src/jira/cli-client.ts`):
+1. Resolve the active sprint id(s) for the board configured in the jira CLI's own
+   config (`jira init` / `board.id` in `~/.config/.jira/.config.yml` — there's no CLI
+   flag to override this from the plugin) via
+   `jira sprint list --state active --plain --no-headers --columns ID,NAME,STATE`.
+   `jira sprint list --raw` does **not** actually produce JSON despite the flag
+   existing (confirmed empirically — it always prints the same tab-delimited table as
+   `--plain`), so this uses `--plain --no-headers` with a minimal column set instead,
+   which is still a stable, easily-parsed tab-delimited format.
+   If several active sprints come back (rare) and a team name is available, prefer
+   the one(s) whose name contains it, mirroring `JiraApiClient`'s REST sprint-matching.
+2. Resolve `JIRA_API_TOKEN` via `resolveJiraApiToken()` (see below).
+3. Query that sprint's issues: `jira issue list -q "sprint in (<id>)" --raw --paginate 0:<max>`
+   (no `ORDER BY` — see below; no `--board`/project filter needed since the sprint id
+   already fully scopes the results to the configured board/team).
+   An earlier version queried `project = <KEY> AND sprint in openSprints()` directly,
+   which is unscoped to any particular board/team and returned every open sprint
+   across the *entire* Jira project (every team sharing that project) — this surfaced
+   as "the CLI works now, but shows other teams' issues instead of mine".
+4. Parse stdout as JSON, map to `JiraIssue[]` (own transform, not `client.ts`'s
+   `transformJiraIssues`, which hardcodes a different URL domain).
+5. Throw `JiraCliError` on `ENOENT`, non-zero exit (includes stderr, e.g. the
+   `401 Unauthorized` string `jira-cli` emits), timeout, or JSON parse failure.
+
+**`shell-env-token.ts`** token resolution priority (`resolveJiraApiToken()`):
+`process.env.JIRA_API_TOKEN` (cheap, no spawn) → `getShellEnvVar('JIRA_API_TOKEN')`
+(spawns the user's login shell once — `$SHELL -ilc 'printf "%s" "$JIRA_API_TOKEN"'` —
+to source `~/.zshrc`/`~/.bashrc`, since Obsidian launched via Launchpad/Spotlight
+doesn't inherit shell rc-file exports) → `settings.jiraApiToken` as a last resort.
+Result is cached in-memory for the plugin's lifetime (`resetShellEnvTokenCache()` is
+a test-only reset hook). `settings.jiraApiToken` is checked **last, not first**: it's
+shared with the REST fallback's Basic Auth and can go stale independently, so if it
+were checked first a stale settings token would silently shadow a working
+shell-captured one — `jira-cli` reports auth failures for `issue list` as an empty
+result set (`✗ No result found for given query...`), not a `401`, so this failure
+mode is easy to misdiagnose as "no sprint issues" rather than a bad token.
+
+**`JiraApiClient`** flow (REST fallback):
 1. `GET /rest/agile/1.0/board/{boardId}/sprint?state=active` → find active sprint
 2. If multiple active sprints, match by team name in sprint title
 3. `GET /rest/agile/1.0/board/{boardId}/sprint/{sprintId}/issue?fields=summary,status,assignee,issuetype` → get issues
@@ -172,6 +224,11 @@ Uses Obsidian `requestUrl()` — avoids CORS restrictions in the Electron webvie
 **`JiraFormatter`** icon system:
 - Issue types: 📋 Story, 🐛 Bug, ☑️ Task, 🎯 Epic, 📝 Subtask, 📌 Other
 - Statuses: ✅ Done/Closed, 🟢 In Progress, 🟡 In Review/Testing, 🔴 Blocked, 🔵 To Do/Other
+- `createJiraSection()` prepends a one-line `**Key:** ...` legend (built by `buildKey()`)
+  spelling out every icon/emoji above the per-assignee groups, so the section is
+  self-explanatory without needing to check this doc. The legend line does not start
+  with `- [`, so `JiraKeyExtractor`'s checkbox-updating regex (which only matches lines
+  starting with `- [ ]`/`- [x]`) can't misfire on it.
 
 **`JiraKeyExtractor`** regex: `/\b([A-Z]+-\d+)\b/g`
 
@@ -289,10 +346,25 @@ vault.read(file) → detect transcript is empty
 detectTeam(file) → "green" → boardId = "214"
     │
     ▼
-JiraApiClient.searchBoardSprintIssues("214", "green")
-    → GET /rest/agile/1.0/board/214/sprint?state=active
-    → GET /rest/agile/1.0/board/214/sprint/{id}/issue
-    → JiraIssue[]
+JiraManager.queryAndFormatSprint(boardId, teamName, projectKey)
+    │
+    ├── [jiraCliEnabled] JiraCliClient.searchActiveSprintIssues(teamName)
+    │       → resolveJiraApiToken() (process.env → shell capture → settings, last resort)
+    │       → jira sprint list --state active --plain --no-headers --columns ID,NAME,STATE
+    │           (board-scoped via jira CLI's own `jira init` config — no --board flag
+    │           exists to pass this from the plugin; --raw doesn't actually give JSON
+    │           for `sprint list` despite the flag existing)
+    │       → resolved sprint id, e.g. "110929"
+    │       → jira issue list -q "sprint in (110929)" --raw
+    │           (NOT `project = <KEY> AND sprint in openSprints()` — that's unscoped to
+    │           any board/team and returns every open sprint across the whole project)
+    │       → JiraIssue[]  (success: skip to grouping below)
+    │       → JiraCliError (ENOENT/401/no active sprint/timeout/bad JSON): console.warn, fall through ↓
+    │
+    └── JiraApiClient.searchBoardSprintIssues("214", "green")
+            → GET /rest/agile/1.0/board/214/sprint?state=active
+            → GET /rest/agile/1.0/board/214/sprint/{id}/issue
+            → JiraIssue[]
     │
     ▼
 groupIssuesByAssignee(issues)
@@ -328,7 +400,7 @@ main.ts
  │         ├── src/output-cleaner.ts
  │         └── src/ui/speaker-attribution-modal.ts
  │    (standup.ts additionally depends on)
- │         └── src/jira/ (manager, api-client, formatter, extractor, client)
+ │         └── src/jira/ (manager, cli-client, shell-env-token, api-client, formatter, extractor, client)
  ├── src/validators.ts
  ├── src/skill-loader.ts
  ├── src/ui/status-bar.ts

@@ -13,7 +13,7 @@ Automate your meeting note processing with AI-powered workflows. This Obsidian p
 - **AI-Powered Summaries**: Generate concise meeting summaries using the GitHub Copilot CLI
 - **Email Chain Processing**: Summarize pasted email threads into a People-linked participant list + AI summary
 - **Daily Summary Generation**: Roll up a day's meetings/notes into a Daily Note summary
-- **JIRA Integration**: Auto-populate standup notes with active sprint issues via direct REST API, and auto-check off JIRA items mentioned in standup content
+- **JIRA Integration**: Auto-populate standup notes with active sprint issues — prefers the `jira` CLI (auth via shell-captured `JIRA_API_TOKEN`) with automatic fallback to direct REST API — and auto-check off JIRA items mentioned in standup content
 - **Status Bar**: Real-time progress updates during processing
 - **Configurable**: Toggle features, customize paths, models, and JIRA board settings
 
@@ -23,6 +23,9 @@ Automate your meeting note processing with AI-powered workflows. This Obsidian p
 - **GitHub Copilot CLI** installed and authenticated (`npm install -g @github/copilot-cli`)
 - **JIRA API Token** (optional, for JIRA integration)
   - Get from: https://id.atlassian.com/manage-profile/security/api-tokens
+  - Or, preferred: an authenticated [`jira` CLI](https://github.com/ankitpokhrel/jira-cli) with
+    `JIRA_API_TOKEN` exported in your shell's rc file (`~/.zshrc`/`~/.bashrc`) — the plugin
+    captures it at runtime, so Obsidian doesn't need its own copy
 - **`whisper-speaker-id` daemon** (optional, for voice-based speaker identification) — see the companion repo
 
 ## Installation
@@ -133,11 +136,15 @@ Go to Settings → Community Plugins → Meeting Processor
 - **Templates Folder**: Where templates are stored (default: `Templates`)
 
 ### JIRA Integration
-- **JIRA Email**: Your Atlassian account email
-- **JIRA API Token**: API token from Atlassian (see Requirements above)
+- **JIRA Email**: Your Atlassian account email (used by the REST fallback)
+- **JIRA API Token**: API token from Atlassian (see Requirements above; used by the REST fallback — the CLI path reads `JIRA_API_TOKEN` from the environment/shell instead)
 - **JIRA Base URL**: Your JIRA instance URL (default: `https://hpe.atlassian.net`)
 - **Green Team Board ID**: JIRA board for Green Team (default: `214`)
 - **JIRA Project Key**: Project key for work items (default: `GLCP`)
+
+#### CLI Integration (preferred JIRA access path)
+- **Enable JIRA CLI**: Prefer the `jira` CLI over direct REST for sprint queries (default: enabled). When enabled, the plugin first resolves the active sprint id for the board configured in the `jira` CLI's own config (`jira sprint list --state active`, since there's no `--board` flag to scope this from the plugin), then spawns `jira issue list -q "sprint in (<id>)" --raw` to fetch that sprint's issues — resolving `JIRA_API_TOKEN` from `process.env`, then a cached shell capture (`$SHELL -ilc '...'`) so it works even when Obsidian is launched from Launchpad/Spotlight without inheriting `~/.zshrc`, then finally plugin settings as a last resort (checked last so a stale REST-fallback token can't shadow a working shell-captured one). On any CLI failure (binary missing, auth error, no active sprint, timeout, bad JSON) it automatically falls back to the REST API above.
+- **JIRA CLI Path**: Path to the `jira` executable (default: `jira`, resolved via PATH)
 
 ### Meeting Detection
 - **Standup Keywords**: Keywords to identify standup meetings (default: `Green Standup`)

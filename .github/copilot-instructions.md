@@ -33,10 +33,12 @@ MeetingProcessorPlugin (main.ts)
 │   └── getSection/isSectionEmpty/replaceSection/upsertSection (used by all handlers, incl. daily-summary.ts at level 2)
 │
 ├── JIRA layer
-│   ├── JiraApiClient          Direct REST API calls (primary path)
-│   ├── JiraFormatter          Markdown output with type icons + status emoji
+│   ├── JiraCliClient          Preferred path: spawns `jira issue list --raw` CLI
+│   ├── shell-env-token.ts     Captures JIRA_API_TOKEN from user's shell env for the CLI
+│   ├── JiraApiClient          Direct REST API calls (fallback if CLI unavailable/fails)
+│   ├── JiraFormatter          Markdown output with type icons + status emoji + legend
 │   ├── JiraKeyExtractor       Extract GLCP-NNNNN keys; update checkboxes + notes
-│   └── JiraManager            Orchestrates query → group → format
+│   └── JiraManager            Tries CLI first, falls back to REST; orchestrates format
 │
 ├── Transcript layer
 │   ├── TranscriptDetector     Priority-ordered cleaner chain
@@ -70,8 +72,27 @@ relabeled as design notes under `docs/legacy-skills/` since their logic is now
 hard-coded in TypeScript. `SkillLoader` reads the 3 active files at startup. Each
 skill file has a `## Purpose` section and task-specific sections.
 
-### JIRA uses direct REST API
-`JiraApiClient` calls `/rest/agile/1.0/board/{boardId}/sprint?state=active` then `sprint/{id}/issue`. Uses Obsidian's `requestUrl()` — **never `fetch`** — to avoid CORS in Electron.
+### JIRA: CLI-first with REST fallback
+`JiraManager.queryAndFormatSprint()` tries `JiraCliClient` first (when `jiraCliEnabled`,
+default on): first resolves the active sprint id via
+`jira sprint list --state active --plain --no-headers --columns ID,NAME,STATE`
+(board-scoped entirely by the `jira` CLI's own `jira init` config — there's no `--board`
+flag to pass this from the plugin, and `sprint list --raw` doesn't actually produce JSON
+despite the flag existing), then spawns `jira issue list -q "sprint in (<id>)" --raw`.
+This is deliberately *not* `project = <KEY> AND sprint in openSprints()` — that JQL is
+unscoped to any board/team and returns every open sprint across the whole project (every
+team sharing it), which surfaced as "the CLI works, but shows other teams' issues".
+Auth comes from `JIRA_API_TOKEN`,
+resolved by `src/jira/shell-env-token.ts` in priority order: `process.env.JIRA_API_TOKEN` →
+a shell-captured value (spawns `$SHELL -ilc 'printf ...'` to source `~/.zshrc`, since
+Obsidian launched via Launchpad/Spotlight doesn't inherit shell rc-file exports — same
+technique as VS Code's `resolveShellEnv`), cached per plugin load → `settings.jiraApiToken`
+as a last resort (checked last, not first, so a stale REST-fallback token saved in plugin
+settings can't shadow a working shell-captured one).
+On any CLI failure (binary missing, non-zero exit, timeout, bad JSON) it falls back to
+`JiraApiClient`, which calls `/rest/agile/1.0/board/{boardId}/sprint?state=active` then
+`sprint/{id}/issue` via Obsidian's `requestUrl()` — **never `fetch`** — to avoid CORS in
+Electron, using Basic Auth from `settings.jiraEmail`/`settings.jiraApiToken`.
 
 ### Transcript detection order is critical
 `WhisperFileMetaCleaner` must appear before `MacWhisperJsonCleaner` (both handle JSON). `SimpleTranscriptCleaner` always returns `true` from `canHandle()` and must be last.
@@ -124,6 +145,8 @@ After building: reload Obsidian with `Cmd+R` (no full restart needed).
 | `peopleFolder` | `People` | People profile notes |
 | `greenBoardId` | `214` | Green Team JIRA board |
 | `jiraProjectKey` | `GLCP` | Project key |
+| `jiraCliEnabled` | `true` | Prefer `jira` CLI over REST for sprint queries |
+| `jiraCliPath` | `jira` | Path to `jira` CLI executable |
 | `standupKeywords` | `Green Standup` | Comma-separated |
 | `macWhisperTranscriptsDir` | `~/Documents/Mac Whisper/Meeting Transcripts` | Source dir for auto-locating `.whisper` files |
 
@@ -152,7 +175,9 @@ After building: reload Obsidian with `Cmd+R` (no full restart needed).
 | `src/handlers/general.ts` | Thin general-meeting subclass (103 lines) |
 | `src/handlers/standup.ts` | Standup subclass: pre/post-meeting JIRA logic (418 lines) |
 | `src/section-utils.ts` | getSection/isSectionEmpty/replaceSection/upsertSection |
-| `src/jira/api-client.ts` | JIRA REST API, board sprint queries |
+| `src/jira/cli-client.ts` | `JiraCliClient` — preferred JIRA path via `jira` CLI, `--raw` JSON parsing |
+| `src/jira/shell-env-token.ts` | Shell-captured `JIRA_API_TOKEN` resolution for the CLI |
+| `src/jira/api-client.ts` | JIRA REST API fallback, board sprint queries |
 | `src/jira/formatter.ts` | Issue type icons + status emoji |
 | `src/jira/extractor.ts` | Regex extract JIRA keys; checkbox + note updates |
 | `src/transcript/detector.ts` | Auto-detect transcript format |
