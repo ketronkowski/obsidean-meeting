@@ -107,6 +107,11 @@ describe('buildTargetPath', () => {
 	test('sanitizes slashes in the title', () => {
 		expect(buildTargetPath('Meetings', '2026-07-28', makeItem({ title: 'Kevin/Ila 1-1' }))).toBe('Meetings/2026-07-28 - Kevin-Ila 1-1.md');
 	});
+
+	test('always uses the fixed "Green Standup" filename for Green Standup items, ignoring the raw parsed title', () => {
+		const item = makeItem({ title: 'Green Team Daily Meeting', isGreenStandup: true });
+		expect(buildTargetPath('Meetings', '2026-07-28', item)).toBe('Meetings/2026-07-28 - Green Standup.md');
+	});
 });
 
 describe('createScheduleNote', () => {
@@ -129,7 +134,7 @@ describe('createScheduleNote', () => {
 		expect(content).toContain('# Attendees\n\n- [[Meller, Jonathan|Jonathan Meller]]');
 	});
 
-	test('creates a Green Standup note from Green Standup Notes.md, prepending organizer to the default roster', async () => {
+	test('creates a Green Standup note from Green Standup Notes.md, prepending organizer to the default roster, using the "Green Standup" filename', async () => {
 		const app = makeApp([], { 'Templates/Green Standup Notes.md': GREEN_STANDUP_TEMPLATE });
 		const settings = makeSettings();
 		const people = makePeopleManager();
@@ -138,6 +143,11 @@ describe('createScheduleNote', () => {
 		const result = await createScheduleNote(app, settings, people, '2026-07-28', item);
 
 		expect(result.status).toBe('created');
+		// Filename must be "Green Standup", not the raw parsed title, so that a
+		// later "Process Meeting" run's detectMeetingType() (which matches on
+		// the filename containing the standupKeywords setting) routes this note
+		// to StandupMeetingHandler and populates # JIRA — not the general handler.
+		expect(result.path).toBe('Meetings/2026-07-28 - Green Standup.md');
 		const content = app._created[result.path];
 		expect(content).toContain('- [[Piddington, Ila|Ila Piddington]]\n- [[Kevin Tronkowski]]');
 		expect(content).toContain('# JIRA');
