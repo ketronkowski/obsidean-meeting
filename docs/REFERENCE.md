@@ -436,7 +436,7 @@ Status emoji: ✅ done/closed · 🟢 in-progress · 🟡 review/testing · 🔴
 | `jiraCliPath` | `jira` | path to `jira` CLI executable |
 | `greenBoardId` | `214` | sprint board |
 | `jiraProjectKey` | `GLCP` | project key |
-| `standupKeywords` | `Green Standup` | standup detection |
+| `standupKeywords` | `Green Standup, Green Team Daily Meeting` | standup detection |
 | `filenamePattern` | `YYYY-MM-DD - *.md` | informational (read-only in UI) |
 | `voiceServiceEnabled` | `true` | enable voice ID |
 | `voiceServiceBinaryPath` | `whisper-speaker-id` | daemon/CLI binary (use full venv path) |

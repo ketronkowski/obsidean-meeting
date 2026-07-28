@@ -32,16 +32,13 @@ function to24Hour(time: string): string {
 
 /**
  * Builds the target `Meetings/{date} - {title}.md` path for a parsed item.
- *
- * Green Standup items always use the fixed "Green Standup" filename — matching
- * exactly what clicking the existing "Green Standup" button produces — so that
- * `detectMeetingType()` (which matches on the filename containing the
- * `standupKeywords` setting, default "Green Standup") correctly routes the
- * resulting note to `StandupMeetingHandler` on a later "Process Meeting" run,
- * rather than to the general handler (which never populates # JIRA).
+ * The note keeps the meeting's real title as its filename (e.g. "Green Team
+ * Daily Meeting") even when it's the Green Standup — see
+ * `settings.standupKeywords`, which must include that title for
+ * `detectMeetingType()` to still route it to `StandupMeetingHandler`.
  */
 export function buildTargetPath(meetingsFolder: string, date: string, item: ParsedScheduleItem): string {
-	const sanitizedTitle = item.isGreenStandup ? 'Green Standup' : sanitizeMeetingTitle(item.title);
+	const sanitizedTitle = sanitizeMeetingTitle(item.title);
 	return `${meetingsFolder}/${date} - ${sanitizedTitle}.md`;
 }
 

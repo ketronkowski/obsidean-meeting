@@ -59,7 +59,7 @@ export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
 	jiraProjectKey: 'GLCP',
 	jiraCliEnabled: true,
 	jiraCliPath: 'jira',
-	standupKeywords: 'Green Standup',
+	standupKeywords: 'Green Standup, Green Team Daily Meeting',
 	filenamePattern: 'YYYY-MM-DD - *.md',
 	voiceServiceEnabled: true,
 	voiceServiceBinaryPath: 'whisper-speaker-id',
