@@ -128,8 +128,8 @@ describe('createScheduleNote', () => {
 		const content = app._created[result.path];
 		expect(content).toContain('when: 2026-07-28');
 		expect(content).not.toContain('<%');
-		expect(content).toContain('start: 2026-07-28T11:00:00');
-		expect(content).toContain('end: 2026-07-28T11:30:00');
+		expect(content).toContain('start: "11:00 AM"');
+		expect(content).toContain('end: "11:30 AM"');
 		expect(content).toContain('organizer: "[[Meller, Jonathan|Jonathan Meller]]"');
 		expect(content).toContain('# Attendees\n\n- [[Meller, Jonathan|Jonathan Meller]]');
 	});
@@ -152,13 +152,14 @@ describe('createScheduleNote', () => {
 		expect(content).toContain('# JIRA');
 	});
 
-	test('converts PM times to 24-hour ISO correctly', async () => {
+	test('keeps start/end as simple 12-hour clock times, not ISO datetimes', async () => {
 		const app = makeApp([], { 'Templates/Meeting Notes.md': MEETING_TEMPLATE });
 		const result = await createScheduleNote(app, makeSettings(), makePeopleManager(), '2026-07-28',
 			makeItem({ startTime: '12:30 PM', endTime: '1:00 PM' }));
 		const content = app._created[result.path];
-		expect(content).toContain('start: 2026-07-28T12:30:00');
-		expect(content).toContain('end: 2026-07-28T13:00:00');
+		expect(content).toContain('start: "12:30 PM"');
+		expect(content).toContain('end: "1:00 PM"');
+		expect(content).not.toMatch(/start:.*T\d{2}:\d{2}/);
 	});
 
 	test('skips creation when the target path already exists (duplicate)', async () => {

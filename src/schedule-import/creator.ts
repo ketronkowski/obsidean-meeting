@@ -14,23 +14,6 @@ export interface CreateScheduleNoteResult {
 const TEMPLATER_WHEN_PATTERN = /when:\s*<%.*?%>/;
 
 /**
- * Converts a 12-hour time string ("11:00 AM") into 24-hour "HH:MM:SS".
- */
-function to24Hour(time: string): string {
-	const match = /^(\d{1,2}):(\d{2})\s*([AP]M)$/i.exec(time.trim());
-	if (!match) return '00:00:00';
-
-	let hour = parseInt(match[1], 10);
-	const minute = match[2];
-	const meridiem = match[3].toUpperCase();
-
-	if (meridiem === 'PM' && hour !== 12) hour += 12;
-	if (meridiem === 'AM' && hour === 12) hour = 0;
-
-	return `${hour.toString().padStart(2, '0')}:${minute}:00`;
-}
-
-/**
  * Builds the target `Meetings/{date} - {title}.md` path for a parsed item.
  * The note keeps the meeting's real title as its filename (e.g. "Green Team
  * Daily Meeting") even when it's the Green Standup — see
@@ -79,7 +62,8 @@ function injectFrontmatter(content: string, extraLines: string[]): string {
 /**
  * Creates a single meeting note for a parsed schedule item:
  *  - loads the correct vault template (Green Standup vs. general Meeting Notes)
- *  - stamps `when`, `start`, `end`, `organizer` frontmatter
+ *  - stamps `when`, `start`, `end` (simple 12-hour clock times, e.g. "11:00 AM"),
+ *    and `organizer` frontmatter
  *  - resolves (or creates) the organizer's People profile and links it as the
  *    first `# Attendees` entry, in addition to the `organizer` frontmatter key
  *  - skips creation if the target path already exists (duplicate handling)
@@ -103,12 +87,9 @@ export async function createScheduleNote(
 	const organizerProfile = await peopleManager.getOrCreateProfile(item.organizer);
 	const organizerLink = peopleManager.generateLink(organizerProfile);
 
-	const startIso = `${date}T${to24Hour(item.startTime)}`;
-	const endIso = `${date}T${to24Hour(item.endTime)}`;
-
 	body = injectFrontmatter(body, [
-		`start: ${startIso}`,
-		`end: ${endIso}`,
+		`start: "${item.startTime}"`,
+		`end: "${item.endTime}"`,
 		`organizer: "${organizerLink}"`,
 	]);
 
