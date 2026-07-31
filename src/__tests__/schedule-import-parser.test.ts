@@ -1,5 +1,22 @@
 import { parseSchedule } from '../schedule-import/parser';
 
+// New format: no "organized by", section headers, parenthetical conflict notes,
+// irregular "ended at" entries, and all-day/multi-day events.
+const NEW_FORMAT_TEXT = `Upcoming / current meetings
+\t\u2022\t2026 July P2P - Daily Sync \u2014 11:30 AM\u201312:00 PM. 3
+\t\u2022\tSIC Weekly Program Meeting \u2014 11:30 AM\u201311:55 AM (conflicts with the P2P Daily Sync). 4
+\t\u2022\t2026 July P2P - Session 3 (Mission Critical) \u2014 12:00 PM\u20134:00 PM. 5
+\t\u2022\tGLRP-12009 - Aruba Switches/SIC Integration- Not Managed by Aruba Central \u2014 12:00 PM\u201312:55 PM. 6
+\t\u2022\tStella's staff meeting (new series) \u2014 12:00 PM\u201312:30 PM. 7
+\t\u2022\tPlatform 3.0 bug squashing \u2014 1:00 PM\u20131:30 PM. 8
+\t\u2022\tGreen Team Daily Meeting \u2014 1:00 PM\u20131:55 PM. 9
+\t\u2022\tGreen and Magenta Design Discussion \u2014 3:00 PM\u20134:00 PM. 10
+Already past today
+\t\u2022\tM&T Bank \u2014 10:00 AM\u201311:00 AM. 11
+\t\u2022\t2026 July P2P - Session 2 ended at 2:00 AM today. 2
+All-day / multi-day
+\t\u2022\tMark PTO is currently in progress and runs through August 11, 2026. 1`;
+
 const SAMPLE_TEXT = `Today's schedule
 \u2022\t2026 July P2P - Daily Sync \u2014 11:00 AM\u201311:30 AM, organized by Meller, Jonathan. 2
 \u2022\t Platform 3.0 - Weekly Program Meeting \u2014 12:00 PM\u201312:30 PM, organized by Gopalan, Ramachandran. 3
@@ -73,5 +90,79 @@ describe('parseSchedule', () => {
 	test('strips trailing footnote-style digit without dropping the organizer name', () => {
 		const { items } = parseSchedule('SIC write use cases \u2014 4:30 PM\u20135:00 PM, organized by Pahwa, Kashish. 7');
 		expect(items[0].organizer).toBe('Pahwa, Kashish');
+	});
+});
+
+describe('parseSchedule — new format (no "organized by", section headers, conflict notes)', () => {
+	test('parses all 9 meeting bullet lines (8 upcoming + 1 past)', () => {
+		const { items } = parseSchedule(NEW_FORMAT_TEXT);
+		expect(items).toHaveLength(9);
+	});
+
+	test('sets organizer to empty string when absent', () => {
+		const { items } = parseSchedule(NEW_FORMAT_TEXT);
+		expect(items.every(i => i.organizer === '')).toBe(true);
+	});
+
+	test('extracts title and times for a simple no-organizer line', () => {
+		const { items } = parseSchedule(NEW_FORMAT_TEXT);
+		const item = items.find(i => i.title === '2026 July P2P - Daily Sync');
+		expect(item).toBeDefined();
+		expect(item!.startTime).toBe('11:30 AM');
+		expect(item!.endTime).toBe('12:00 PM');
+	});
+
+	test('strips parenthetical conflict note from after the end time', () => {
+		const { items } = parseSchedule(NEW_FORMAT_TEXT);
+		const item = items.find(i => i.title === 'SIC Weekly Program Meeting');
+		expect(item).toBeDefined();
+		expect(item!.startTime).toBe('11:30 AM');
+		expect(item!.endTime).toBe('11:55 AM');
+	});
+
+	test('preserves parenthetical in title when it appears before the em dash', () => {
+		const { items } = parseSchedule(NEW_FORMAT_TEXT);
+		expect(items.find(i => i.title === '2026 July P2P - Session 3 (Mission Critical)')).toBeDefined();
+		expect(items.find(i => i.title === "Stella's staff meeting (new series)")).toBeDefined();
+	});
+
+	test('handles titles with internal hyphens and no em dash (GLRP-NNNNN style)', () => {
+		const { items } = parseSchedule(NEW_FORMAT_TEXT);
+		const item = items.find(i => i.title === 'GLRP-12009 - Aruba Switches/SIC Integration- Not Managed by Aruba Central');
+		expect(item).toBeDefined();
+		expect(item!.startTime).toBe('12:00 PM');
+		expect(item!.endTime).toBe('12:55 PM');
+	});
+
+	test('detects Green Team Daily Meeting as Green Standup with no organizer', () => {
+		const { items } = parseSchedule(NEW_FORMAT_TEXT);
+		const green = items.find(i => i.title === 'Green Team Daily Meeting');
+		expect(green).toBeDefined();
+		expect(green!.isGreenStandup).toBe(true);
+	});
+
+	test('section headers are unparsed, not meetings', () => {
+		const { unparsed } = parseSchedule(NEW_FORMAT_TEXT);
+		const texts = unparsed.map(u => u.rawLine);
+		expect(texts.some(t => t.includes('Upcoming / current meetings'))).toBe(true);
+		expect(texts.some(t => t.includes('Already past today'))).toBe(true);
+		expect(texts.some(t => t.includes('All-day / multi-day'))).toBe(true);
+	});
+
+	test('"ended at" entries without a time range are unparsed', () => {
+		const { unparsed } = parseSchedule(NEW_FORMAT_TEXT);
+		expect(unparsed.some(u => u.rawLine.includes('Session 2 ended at'))).toBe(true);
+	});
+
+	test('all-day/multi-day prose entries are unparsed', () => {
+		const { unparsed } = parseSchedule(NEW_FORMAT_TEXT);
+		expect(unparsed.some(u => u.rawLine.includes('Mark PTO'))).toBe(true);
+	});
+
+	test('standalone no-organizer line (no section, no bullet)', () => {
+		const { items } = parseSchedule('Platform 3.0 bug squashing \u2014 1:00 PM\u20131:30 PM. 8');
+		expect(items).toHaveLength(1);
+		expect(items[0].title).toBe('Platform 3.0 bug squashing');
+		expect(items[0].organizer).toBe('');
 	});
 });

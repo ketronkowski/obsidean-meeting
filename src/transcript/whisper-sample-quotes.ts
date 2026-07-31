@@ -27,7 +27,7 @@ interface WhisperMetadata {
  * stores timestamps in milliseconds (e.g. 81140 = 81.14s); values > 10000
  * are assumed to be ms, smaller values are treated as already-seconds.
  */
-function msToSec(value: number | undefined): number {
+export function msToSec(value: number | undefined): number {
 	const v = value ?? 0;
 	return v > 10_000 ? v / 1000 : v;
 }

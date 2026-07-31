@@ -1,6 +1,7 @@
 import { App, Modal, Notice } from 'obsidian';
 import { VoiceAnalysisResponse, VoiceNameAssignment, VoiceSpeakerResult } from '../voice-analysis-types';
 import { VoiceAnalysisClient } from '../voice-analysis-client';
+import { WhisperSpeakerStats, isLowSignalSpeaker } from '../transcript/whisper-speaker-stats';
 
 const AUTO_THRESHOLD = 0.85;
 const UNRESOLVED_THRESHOLD = 0.65;
@@ -25,6 +26,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	private whisperPath: string | null;
 	private voiceClient: VoiceAnalysisClient | null;
 	private sampleQuotes: Map<string, string>;
+	private speakerStats: Map<string, WhisperSpeakerStats>;
 
 	// Per-UUID pending name decisions (empty string = skip). Forced to '' while
 	// that row's Skip checkbox is checked.
@@ -76,6 +78,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		whisperPath: string | null = null,
 		voiceClient: VoiceAnalysisClient | null = null,
 		sampleQuotes: Map<string, string> = new Map(),
+		speakerStats: Map<string, WhisperSpeakerStats> = new Map(),
 	) {
 		super(app);
 		this.response = response;
@@ -84,6 +87,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		this.whisperPath = whisperPath;
 		this.voiceClient = voiceClient;
 		this.sampleQuotes = sampleQuotes;
+		this.speakerStats = speakerStats;
 		this.pending = new Map();
 		this.knownSpeakers = [...response.knownSpeakers];
 
@@ -178,6 +182,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 				row.createEl('span', { text: '👤', cls: 'voice-attendee-badge' });
 			}
 			this.renderScoreBadge(row, s.score);
+			this.renderLowSignalBadge(row, s.speakerUuid);
 			this.renderPlayButton(row, s.speakerUuid);
 			this.renderSampleQuote(row, s.speakerUuid);
 
@@ -192,7 +197,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			});
 
 			const input = this.renderNewNameInput(row, s.speakerUuid);
-			this.renderSkipAndWipeCheckboxes(assignRow, s.speakerUuid, select, input);
+			this.renderSkipAndWipeCheckboxes(assignRow, s.speakerUuid, select, input, this.isLowSignal(s.speakerUuid));
 		}
 	}
 
@@ -220,6 +225,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 
 			row.createEl('span', { text: s.displayName, cls: 'voice-speaker-label' });
 			this.renderScoreBadge(row, s.score);
+			this.renderLowSignalBadge(row, s.speakerUuid);
 			this.renderPlayButton(row, s.speakerUuid);
 			this.renderSampleQuote(row, s.speakerUuid);
 
@@ -232,7 +238,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			});
 
 			const input = this.renderNewNameInput(row, s.speakerUuid);
-			this.renderSkipAndWipeCheckboxes(assignRow, s.speakerUuid, select, input);
+			this.renderSkipAndWipeCheckboxes(assignRow, s.speakerUuid, select, input, this.isLowSignal(s.speakerUuid));
 		}
 	}
 
@@ -247,6 +253,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		for (const s of speakers) {
 			const row = body.createDiv({ cls: 'voice-row' });
 			row.createEl('span', { text: s.displayName, cls: 'voice-speaker-label' });
+			this.renderLowSignalBadge(row, s.speakerUuid);
 			this.renderPlayButton(row, s.speakerUuid);
 			this.renderSampleQuote(row, s.speakerUuid);
 
@@ -344,6 +351,31 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		});
 	}
 
+	/** Whether this speaker's total speaking time looks like diarization noise. */
+	private isLowSignal(speakerUuid: string): boolean {
+		return isLowSignalSpeaker(this.speakerStats.get(speakerUuid));
+	}
+
+	/**
+	 * Render a "⚠ Low signal" badge with the speaker's total speaking time and
+	 * segment count when their stats suggest MacWhisper's diarization split
+	 * out crosstalk/noise as a spurious extra "speaker" rather than a real
+	 * distinct participant. On Auto/Confirm rows, this pairs with Skip being
+	 * pre-checked (see renderSkipAndWipeCheckboxes); on Unresolved rows there's
+	 * no Skip checkbox to pre-check (the dropdown already defaults to skip),
+	 * so the badge is shown purely as an explanation.
+	 */
+	private renderLowSignalBadge(container: HTMLElement, speakerUuid: string) {
+		const stats = this.speakerStats.get(speakerUuid);
+		if (!isLowSignalSpeaker(stats)) return;
+		const dur = stats!.totalDurationSec;
+		const durText = dur < 1 ? `${Math.round(dur * 1000)}ms` : `${dur.toFixed(1)}s`;
+		container.createEl('span', {
+			text: `⚠ Low signal (${durText} / ${stats!.segmentCount} clip${stats!.segmentCount !== 1 ? 's' : ''})`,
+			cls: 'voice-low-signal-badge',
+		});
+	}
+
 	/**
 	 * Render a short transcript excerpt for this speaker (if one was extracted
 	 * from the .whisper file) so users have text context, not just a voice
@@ -385,6 +417,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		uuid: string,
 		select: HTMLSelectElement,
 		input: HTMLInputElement,
+		lowSignal: boolean = false,
 	) {
 		const group = container.createDiv({ cls: 'voice-checkbox-group' });
 
@@ -402,8 +435,8 @@ export class VoiceSpeakerAttributionModal extends Modal {
 			this.wipeCheckboxEls.set(uuid, wipeCb);
 		}
 
-		skipCb.addEventListener('change', () => {
-			if (skipCb.checked) {
+		const applySkipState = (checked: boolean) => {
+			if (checked) {
 				select.disabled = true;
 				input.disabled = true;
 				this.pending.set(uuid, '');
@@ -418,7 +451,17 @@ export class VoiceSpeakerAttributionModal extends Modal {
 					wipeCb.disabled = true;
 				}
 			}
-		});
+		};
+
+		skipCb.addEventListener('change', () => applySkipState(skipCb.checked));
+
+		// Pre-check Skip for speakers whose stats look like diarization noise
+		// (e.g. a couple of seconds of crosstalk MacWhisper split into its own
+		// "speaker") — still fully correctable, the user can just uncheck it.
+		if (lowSignal) {
+			skipCb.checked = true;
+			applySkipState(true);
+		}
 	}
 
 	/**
@@ -726,6 +769,10 @@ export class VoiceSpeakerAttributionModal extends Modal {
 	 *                     /extract-clip endpoint. Pass null to disable the Play button.
 	 * @param sampleQuotes Map of speakerUuid -> a representative transcript excerpt,
 	 *                     shown alongside confirm/unresolved speakers for text context.
+	 * @param speakerStats Map of speakerUuid -> total speaking duration/segment count,
+	 *                     used to pre-check "Skip" and show a "⚠ Low signal" badge for
+	 *                     speakers whose stats look like diarization noise rather than
+	 *                     a real distinct participant (see whisper-speaker-stats.ts).
 	 */
 	static show(
 		app: App,
@@ -734,6 +781,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		whisperPath: string | null = null,
 		voiceClient: VoiceAnalysisClient | null = null,
 		sampleQuotes: Map<string, string> = new Map(),
+		speakerStats: Map<string, WhisperSpeakerStats> = new Map(),
 	): Promise<VoiceNameAssignment[]> {
 		const allAuto = response.speakers.every(s => s.action === 'auto');
 		if (allAuto) {
@@ -745,7 +793,7 @@ export class VoiceSpeakerAttributionModal extends Modal {
 		}
 
 		return new Promise(resolve => {
-			new VoiceSpeakerAttributionModal(app, response, attendees, resolve, whisperPath, voiceClient, sampleQuotes).open();
+			new VoiceSpeakerAttributionModal(app, response, attendees, resolve, whisperPath, voiceClient, sampleQuotes, speakerStats).open();
 		});
 	}
 }

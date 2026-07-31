@@ -379,6 +379,17 @@ background: var(--background-modifier-border);
 color: var(--text-muted);
 }
 
+.voice-low-signal-badge {
+display: inline-block;
+padding: 2px 7px;
+border-radius: 10px;
+font-size: 0.78em;
+font-weight: 600;
+margin-left: 6px;
+background: var(--background-modifier-error, #6b2b2b);
+color: var(--text-on-accent, #fff);
+}
+
 .voice-attendee-badge {
 display: inline-block;
 font-size: 0.8em;
@@ -536,4 +547,61 @@ font-size: 0.9em;
 	font-size: 0.85em;
 	font-family: var(--font-monospace);
 	padding: 2px 0;
+}
+
+/* Schedule CSV file import */
+
+.schedule-csv-section {
+	margin-bottom: 14px;
+}
+
+.schedule-csv-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 8px;
+}
+
+.schedule-csv-choose-btn {
+	white-space: nowrap;
+}
+
+.schedule-csv-drop-zone {
+	width: 100%;
+	border: 2px dashed var(--background-modifier-border);
+	border-radius: 6px;
+	padding: 14px 10px;
+	text-align: center;
+	cursor: pointer;
+	transition: border-color 0.15s, background 0.15s;
+	margin-bottom: 4px;
+}
+
+.schedule-csv-drop-zone.schedule-csv-drop-active {
+	border-color: var(--interactive-accent);
+	background: var(--background-modifier-hover);
+}
+
+.schedule-csv-drop-label {
+	color: var(--text-muted);
+	font-size: 0.9em;
+	user-select: none;
+	pointer-events: none;
+}
+
+.schedule-paste-divider {
+	display: flex;
+	align-items: center;
+	text-align: center;
+	margin: 14px 0 10px;
+	color: var(--text-muted);
+	font-size: 0.85em;
+}
+
+.schedule-paste-divider::before,
+.schedule-paste-divider::after {
+	content: '';
+	flex: 1;
+	border-bottom: 1px solid var(--background-modifier-border);
+	margin: 0 8px;
 }

@@ -85,14 +85,18 @@ export async function createScheduleNote(
 
 	let body = await loadTemplateBody(app, settings, date, item.isGreenStandup);
 
-	const organizerProfile = await peopleManager.getOrCreateProfile(item.organizer);
-	const organizerLink = peopleManager.generateLink(organizerProfile);
-
-	body = injectFrontmatter(body, [
+	const frontmatterLines = [
 		`start: "${item.startTime}"`,
 		`end: "${item.endTime}"`,
-		`organizer: "${organizerLink}"`,
-	]);
+	];
+
+	if (item.organizer) {
+		const organizerProfile = await peopleManager.getOrCreateProfile(item.organizer);
+		const organizerLink = peopleManager.generateLink(organizerProfile);
+		frontmatterLines.push(`organizer: "${organizerLink}"`);
+	}
+
+	body = injectFrontmatter(body, frontmatterLines);
 
 	const folder = app.vault.getAbstractFileByPath(meetingsFolder);
 	if (!folder) {

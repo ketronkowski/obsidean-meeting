@@ -90,7 +90,9 @@ export class ScheduleImportModal extends Modal {
 				label.createEl('span', { text: ' 🟢 Green Standup', cls: 'schedule-import-badge' });
 			}
 			label.createEl('div', {
-				text: `${row.item.startTime}–${row.item.endTime}, organized by ${row.item.organizer}`,
+				text: row.item.organizer
+					? `${row.item.startTime}–${row.item.endTime}, organized by ${row.item.organizer}`
+					: `${row.item.startTime}–${row.item.endTime}`,
 				cls: 'schedule-import-hint'
 			});
 			label.createEl('div', {

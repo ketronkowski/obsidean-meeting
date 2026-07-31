@@ -181,4 +181,19 @@ describe('createScheduleNote', () => {
 		await createScheduleNote(app, makeSettings(), people, '2026-07-28', makeItem({ organizer: 'Unknown, Person' }));
 		expect(people.getOrCreateProfile).toHaveBeenCalledWith('Unknown, Person');
 	});
+
+	test('creates a note without organizer frontmatter when organizer is empty', async () => {
+		const app = makeApp([], { 'Templates/Meeting Notes.md': MEETING_TEMPLATE });
+		const people = makePeopleManager();
+
+		const result = await createScheduleNote(app, makeSettings(), people, '2026-07-28',
+			makeItem({ organizer: '' }));
+
+		expect(result.status).toBe('created');
+		const content = app._created[result.path];
+		expect(content).toContain('start: "11:00 AM"');
+		expect(content).toContain('end: "11:30 AM"');
+		expect(content).not.toContain('organizer:');
+		expect(people.getOrCreateProfile).not.toHaveBeenCalled();
+	});
 });

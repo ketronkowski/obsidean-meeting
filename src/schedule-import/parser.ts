@@ -33,11 +33,14 @@ const GREEN_STANDUP_TITLE = 'Green Team Daily Meeting';
 // Bullet character, straight/em/en dash before the title, or nothing at all.
 const BULLET_PREFIX = /^[•\-*]\s*/;
 
-// Title — start–end, organized by Organizer. [trailing footnote digits]
+// Title — start–end[, organized by Organizer]. [trailing footnote digits]
 // Accepts en dash (–) or hyphen (-) as both the title/time separator and the
 // time-range separator, and a hyphen or em dash between times.
+// An optional parenthetical note (e.g. "(conflicts with the P2P Daily Sync)")
+// after the end time is silently discarded. "organized by" is optional —
+// newer calendar paste formats omit the organizer entirely.
 const MEETING_LINE_PATTERN =
-	/^(.+?)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M),\s*organized by\s+(.+?)\.?\s*\d*\s*$/i;
+	/^(.+?)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M)\s*[–—-]\s*(\d{1,2}:\d{2}\s*[AP]M)\s*(?:\([^)]*\)\s*)?(?:,\s*organized by\s+(.+?))?\.?\s*\d*\s*$/i;
 
 function stripBullet(line: string): string {
 	return line.replace(BULLET_PREFIX, '').trim();
@@ -64,7 +67,7 @@ export function parseSchedule(text: string): ParsedSchedule {
 		const title = match[1].trim();
 		const startTime = match[2].replace(/\s+/g, ' ').trim().toUpperCase();
 		const endTime = match[3].replace(/\s+/g, ' ').trim().toUpperCase();
-		const organizer = match[4].trim();
+		const organizer = match[4]?.trim() ?? '';
 
 		items.push({
 			rawLine: trimmed,

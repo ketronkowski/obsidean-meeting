@@ -8,6 +8,7 @@ import { VoiceSpeakerAttributionModal } from './ui/voice-speaker-attribution-mod
 import { VoiceNameAssignment } from './voice-analysis-types';
 import { extractAttendeeLinks, extractTranscriptText } from './speaker-resolver';
 import { extractWhisperSampleQuotes } from './transcript/whisper-sample-quotes';
+import { extractWhisperSpeakerStats } from './transcript/whisper-speaker-stats';
 import * as JSZip from 'jszip';
 
 /**
@@ -117,11 +118,15 @@ export class VoiceSpeakerResolver {
 				...noteAttendeeNames.filter(n => !hintSet.has(n.toLowerCase())),
 			];
 
-			// Extract sample quotes per speaker ID from the .whisper file itself
-			// (independent of the daemon) so unresolved/generic speakers can be
-			// shown a bit of transcript context alongside the voice match, to
-			// help the user identify who's who even before playing audio.
-			const sampleQuotes = await this.loadSampleQuotes(whisperPath);
+			// Extract sample quotes + speaking-time stats per speaker ID from the
+			// .whisper file itself (independent of the daemon) so unresolved/
+			// generic speakers can be shown a bit of transcript context alongside
+			// the voice match, and so the modal can pre-check "Skip" for speakers
+			// whose total speaking time looks like diarization noise rather than
+			// a real distinct participant.
+			const metadataJson = await this.loadMetadataJson(whisperPath);
+			const sampleQuotes = metadataJson ? extractWhisperSampleQuotes(metadataJson) : new Map();
+			const speakerStats = metadataJson ? extractWhisperSpeakerStats(metadataJson) : new Map();
 
 			// Show modal (auto-bypasses when all speakers ≥ 85% confidence).
 			// Pass whisperPath + voiceClient so the modal's Play buttons can
@@ -133,6 +138,7 @@ export class VoiceSpeakerResolver {
 				whisperPath,
 				this.voiceClient,
 				sampleQuotes,
+				speakerStats,
 			);
 
 			if (assignments.length === 0) {
@@ -166,22 +172,22 @@ export class VoiceSpeakerResolver {
 	}
 
 	/**
-	 * Read and unzip a .whisper file to extract a sample quote per speaker ID,
-	 * for display in the voice attribution modal. Returns an empty map on any
-	 * read/parse failure — sample quotes are a nice-to-have, never fatal.
+	 * Read and unzip a .whisper file to get its raw metadata.json text, shared
+	 * by both sample-quote extraction and speaker-stats extraction so the file
+	 * is only read/unzipped once. Returns null on any read/parse failure — both
+	 * downstream uses are nice-to-haves, never fatal.
 	 */
-	private async loadSampleQuotes(whisperPath: string): Promise<Map<string, string>> {
+	private async loadMetadataJson(whisperPath: string): Promise<string | null> {
 		try {
 			const { readFile } = require('fs/promises');
 			const buffer = await readFile(whisperPath);
 			const zip = await JSZip.loadAsync(buffer);
 			const metaEntry = zip.file('metadata.json');
-			if (!metaEntry) return new Map();
-			const text = await metaEntry.async('text');
-			return extractWhisperSampleQuotes(text);
+			if (!metaEntry) return null;
+			return await metaEntry.async('text');
 		} catch (err) {
-			console.warn('[VoiceSpeakerResolver] Failed to load sample quotes:', err);
-			return new Map();
+			console.warn('[VoiceSpeakerResolver] Failed to load metadata.json:', err);
+			return null;
 		}
 	}
 
