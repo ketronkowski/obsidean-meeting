@@ -120,6 +120,7 @@ describe('StandupMeetingHandler.process — independent pre/post-meeting orchest
 		handler.app = { vault: { read: jest.fn().mockResolvedValue('') } };
 		jest.spyOn(handler, 'isJiraSectionEmpty').mockReturnValue(opts.jiraEmpty);
 		jest.spyOn(handler, 'hasProcessableTranscript').mockReturnValue(opts.hasTranscript);
+		jest.spyOn(handler, 'selectWhisperExport').mockResolvedValue(false);
 		jest.spyOn(handler, 'processPreMeeting').mockResolvedValue(undefined);
 		jest.spyOn(handler, 'processPostMeeting').mockResolvedValue(undefined);
 	}
@@ -128,7 +129,7 @@ describe('StandupMeetingHandler.process — independent pre/post-meeting orchest
 		const handler = buildHandler();
 		mockOrchestration(handler, { jiraEmpty: true, hasTranscript: true });
 
-		await handler.process(makeFile('Green Standup'));
+		await expect(handler.process(makeFile('Green Standup'))).resolves.toBe('complete');
 
 		expect(handler.processPreMeeting).toHaveBeenCalledTimes(1);
 		expect(handler.processPostMeeting).toHaveBeenCalledTimes(1);
@@ -141,10 +142,19 @@ describe('StandupMeetingHandler.process — independent pre/post-meeting orchest
 		const handler = buildHandler();
 		mockOrchestration(handler, { jiraEmpty: true, hasTranscript: false });
 
-		await handler.process(makeFile('Green Standup'));
+		await expect(handler.process(makeFile('Green Standup'))).resolves.toBe('transcript-not-found');
 
 		expect(handler.processPreMeeting).toHaveBeenCalledTimes(1);
 		expect(handler.processPostMeeting).not.toHaveBeenCalled();
+	});
+
+	it('continues post-meeting processing when the user selects an export after Jira is populated', async () => {
+		const handler = buildHandler();
+		mockOrchestration(handler, { jiraEmpty: true, hasTranscript: false });
+		handler.selectWhisperExport.mockResolvedValue(true);
+		await expect(handler.process(makeFile('Green Standup'))).resolves.toBe('complete');
+		expect(handler.processPreMeeting.mock.invocationCallOrder[0]).toBeLessThan(handler.selectWhisperExport.mock.invocationCallOrder[0]);
+		expect(handler.selectWhisperExport.mock.invocationCallOrder[0]).toBeLessThan(handler.processPostMeeting.mock.invocationCallOrder[0]);
 	});
 
 	it('runs ONLY post-meeting when JIRA is already populated and transcript content exists', async () => {
@@ -161,7 +171,7 @@ describe('StandupMeetingHandler.process — independent pre/post-meeting orchest
 		const handler = buildHandler();
 		mockOrchestration(handler, { jiraEmpty: false, hasTranscript: false });
 
-		await expect(handler.process(makeFile('Green Standup'))).resolves.toBeUndefined();
+		await expect(handler.process(makeFile('Green Standup'))).resolves.toBe('transcript-not-found');
 
 		expect(handler.processPreMeeting).not.toHaveBeenCalled();
 		expect(handler.processPostMeeting).not.toHaveBeenCalled();

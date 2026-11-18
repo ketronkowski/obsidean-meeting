@@ -40,16 +40,15 @@ export class MeetingRouter {
 	/**
 	 * Process a meeting file (standup or general)
 	 */
-	async process(file: TFile): Promise<void> {
+	async process(file: TFile): Promise<'complete' | 'transcript-not-found'> {
 		const meetingType = detectMeetingType(file, this.settings);
 		
 		console.log(`Processing ${meetingType} meeting: ${file.basename}`);
 
 		if (meetingType === 'standup') {
-			await this.standupHandler.process(file);
-		} else {
-			await this.generalHandler.process(file);
+			return this.standupHandler.process(file);
 		}
+		return this.generalHandler.process(file);
 	}
 
 	/**

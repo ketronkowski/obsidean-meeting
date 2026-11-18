@@ -13,6 +13,7 @@ Automate your meeting note processing with AI-powered workflows. This Obsidian p
 - **AI-Powered Summaries**: Generate concise meeting summaries using the GitHub Copilot CLI
 - **Email Chain Processing**: Summarize pasted email threads into a People-linked participant list + AI summary
 - **Daily Summary Generation**: Roll up a day's meetings/notes into a Daily Note summary
+- **Natural-Language Document Search**: Find ranked notes across the entire vault and optionally search embedded screenshots using GitHub Copilot CLI with `--model fusion`
 - **JIRA Integration**: Auto-populate standup notes with active sprint issues — prefers the `jira` CLI (auth via shell-captured `JIRA_API_TOKEN`) with automatic fallback to direct REST API — and auto-check off JIRA items mentioned in standup content
 - **Status Bar**: Real-time progress updates during processing
 - **Configurable**: Toggle features, customize paths, models, and JIRA board settings
@@ -74,6 +75,86 @@ Automate your meeting note processing with AI-powered workflows. This Obsidian p
 The plugin checks the active file against daily-note, meeting, then email-chain
 rules (in that order) and routes it to the matching handler automatically.
 
+### Importing a Schedule
+
+From a daily note, run **Import Today's Schedule**. Choose or drop an Outlook CSV
+file, or paste the CSV (including its header) and select **Parse Schedule**.
+Both combined `Start` / `End` columns and separate `Start Date`, `Start Time`,
+`End Date`, and `End Time` columns are supported. Split dates can use `M/D/YYYY`
+or `YYYY-MM-DD`. The preview shows timed events for selection and lists all-day
+or multi-day events separately without creating notes for them. Duration,
+location, and RSVP columns do not affect import.
+
+### Searching Vault Documents
+
+Click the **search** ribbon icon or run **Search vault documents** from the Command
+Palette. Enter keywords or a natural-language request such as "What did we decide
+about X?" or "Find notes about the release plan", then select **Search** at the
+bottom of the dialog. The scrollable list shows up to
+10 ranked matches by default; change this under **Document Search → Maximum search
+results** in the plugin settings. Each result shows a document-type icon and a
+clickable title; hover over the title to see the full vault path. Select a result
+to open the note and close the dialog. General requests (for example, "Write a Python
+script") produce a warning and are ignored rather than answered.
+
+By default, search uses a **local full-text index of every Markdown note**,
+regardless of folder. GitHub Copilot CLI checks the query's intent and ranks the
+most relevant excerpts in one request, with a second request if the initial
+matches are weak and there are more candidates. Successful results can be reused
+for up to 15 minutes; vault changes invalidate them. Indexed search can miss
+paraphrases. Check **Search more deeply (scan all notes)** to scan complete notes
+in batches. Likely matches are sent first, but no notes are skipped. Long notes
+are split at headings or paragraph breaks where possible, and at most two
+requests run concurrently.
+
+The index is built locally without AI calls and stored per desktop vault under
+`~/.cache/obsidean-meeting/`, outside the vault. It includes note paths, headings,
+and search terms. It updates after edits, reconciles at startup and every 15
+minutes while Obsidian is open, and checks content hashes daily when due. No cron
+job is required. The Command Palette has **Rebuild document search index** and
+**Cancel document search index rebuild** commands.
+
+Results include the path and a relevance explanation, and paths must resolve to
+Markdown files supplied to the search. Results appear as batches finish and
+remain clickable while searching. The dialog shows elapsed time and progress;
+opening a result or closing the dialog cancels the remaining search. If a later
+batch fails, matches already found remain available alongside the error.
+
+**Search screenshots if no notes match** is unchecked by default. When checked,
+the plugin checks all Markdown notes before concluding there are no matches.
+Only then does GitHub Copilot CLI inspect local
+PNG, JPEG, GIF, and WebP images embedded in notes (resolved through Obsidian's link
+cache). Matching results open the **containing note**, not the image. Shared images
+are inspected once per search. This fallback requires a local desktop vault.
+
+For faster first screenshot matches, enable **Document Search → Cache screenshot
+descriptions in the background**. This separate, off-by-default setting sends
+at most one new or changed embedded image to GitHub Copilot CLI per 15-minute
+interval while Obsidian is open. Descriptions and content fingerprints are stored
+in the local `*-screenshots.json` cache. The plugin reuses its resolved embed
+references until the vault or Obsidian link metadata changes. Captions only
+prioritize which images to inspect first; every image still gets checked against
+the current query, including images with no caption. Turning off background
+enrichment stops new descriptions from being generated; it does not delete the
+local cache.
+
+To compare search performance, open the Obsidian developer console and look for
+`Document search timing` (total and first-match milliseconds, CLI calls, and
+cache status) and `Document search local retrieval`. These metrics do not
+include note contents or search terms.
+
+Every call in this feature, including intent classification and image analysis,
+explicitly uses **`--model fusion`**, independently of the plugin's Model setting.
+The installed CLI's `copilot help config` documents `fusion` as a supported
+model option. Search also uses `--output-format json --stream off --no-color`
+and extracts the final assistant message from the CLI's JSON event stream. This
+avoids the text renderer's line wrapping, which can corrupt JSON strings. Fenced or
+prefaced JSON responses are accepted without applying prose cleanup to JSON data.
+Use a CLI version/account that supports these flags; CLI and response errors are
+shown rather than silently switching models. Note contents and, if
+enabled, embedded images are sent to GitHub Copilot CLI for analysis. Search
+does not edit notes.
+
 ### Meeting File Requirements
 
 Your meeting notes must:
@@ -88,9 +169,10 @@ Your meeting notes must:
 Any meeting that doesn't match standup keywords.
 
 **Processing workflow:**
-1. Extract attendees from screenshots or content, into `# Attendees`
-2. Clean transcript in `# Transcript` (skipped if `# Copilot Summary` already has content)
-3. Generate summary into `# Summary`
+1. Extract attendees from screenshots or note content for speaker identification.
+2. Expand the transcript, resolve speaker labels, and clean it (cleaning is skipped if `# Copilot Summary` already has content).
+3. Add named transcript speakers to `# Attendees` without duplicating existing entries. Unidentified speakers are not added.
+4. Generate the summary in `# Summary`.
 
 #### Standup Meetings
 Meetings with "Green Standup" in the filename.
@@ -98,6 +180,13 @@ Meetings with "Green Standup" in the filename.
 **Pre-meeting mode** (`# Transcript` empty or <50 chars):
 1. Populate `# JIRA` section with active sprint issues
 2. Add expected attendees
+
+When the transcript section is empty, both meeting types look in the configured
+MacWhisper Transcripts Directory and `~/Documents/Mac Whisper/Auto Exported`.
+If there is no exact filename match, choose a `.whisper` export from the dialog.
+Exports within the note's scheduled time range appear first when the filename
+includes a timestamp. Skipping the dialog leaves the transcript unchanged;
+JIRA can still be populated for standups.
 
 **Post-meeting mode** (`# Transcript` has content):
 1. Process attendees
@@ -120,7 +209,7 @@ Notes matching the `dailyNotesFolder` daily-note filename pattern
 Go to Settings → Community Plugins → Meeting Processor
 
 ### AI Settings
-- **Model**: AI model passed to `copilot --model` (Auto, Claude Sonnet 4.5, Claude Opus 4.5, Claude Haiku 4.5, GPT-5 mini; default: `auto`)
+- **Model**: AI model passed to `copilot --model` for processing (default: `fusion`). Existing selections are preserved, and Auto and the other model choices remain available. Vault search always uses `--model fusion`.
 - **Copilot CLI Path**: Path to copilot executable (default: `copilot`)
 
 ### Processing Preferences

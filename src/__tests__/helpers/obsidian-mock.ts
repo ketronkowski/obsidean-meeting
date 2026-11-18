@@ -8,11 +8,16 @@ if (typeof HTMLElement !== 'undefined') {
 	): HTMLElement {
 		const el = document.createElement(tag);
 		if (attrs) {
-			const { text, cls, type, placeholder, ...rest } = attrs as any;
+			const { text, cls, type, placeholder, attr, ...rest } = attrs;
 			if (text !== undefined) el.textContent = String(text);
 			if (cls !== undefined) el.className = String(cls);
 			if (type !== undefined) (el as HTMLInputElement).type = String(type);
 			if (placeholder !== undefined) (el as HTMLInputElement).placeholder = String(placeholder);
+			if (attr && typeof attr === 'object') {
+				for (const [k, v] of Object.entries(attr)) {
+					if (v != null) el.setAttribute(k, String(v));
+				}
+			}
 			for (const [k, v] of Object.entries(rest)) {
 				if (k === 'value') (el as HTMLOptionElement).value = String(v);
 				else el.setAttribute(k, String(v));
@@ -50,6 +55,7 @@ export class Modal {
 
 	open() {}
 	close() {}
+	setTitle(_title: string) {}
 }
 
 export class Notice {
@@ -58,4 +64,12 @@ export class Notice {
 
 export class TFile {}
 
+export class FileSystemAdapter {
+	getFullPath(path: string) {
+		return `/vault/${path}`;
+	}
+}
+
 export const App = jest.fn();
+export const normalizePath = (path: string) => path.replace(/^\/+|\/+$/g, '');
+export const setIcon = jest.fn((element: HTMLElement, icon: string) => element.setAttribute('data-icon', icon));

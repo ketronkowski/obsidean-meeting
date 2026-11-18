@@ -19,6 +19,7 @@ import { CopilotClientManager } from '../copilot-client';
 import { SkillLoader } from '../skill-loader';
 import { StatusBarManager } from '../ui/status-bar';
 import { GeneralMeetingHandler } from '../handlers/general';
+import { getSection, replaceSection } from '../section-utils';
 
 const fakeApp = {} as App;
 
@@ -92,6 +93,45 @@ describe('processAttendees + screenshots', () => {
 		expect(written).not.toContain('SCR-1.png');
 		// Screenshot attachment file was deleted after processing.
 		expect(handler.app.vault.delete).toHaveBeenCalledWith({ path: 'Media/SCR-1.png' });
+	});
+
+	test('adds speakers after expansion and attribution without replacing or duplicating attendees', async () => {
+		const handler = buildHandler();
+		const file = makeFile('Project Kick-off');
+		let content = [
+			'# Attendees',
+			'## In Meeting (2)',
+			'- [[Example, Morgan|Morgan Example]]',
+			'- Pat Example',
+			'## Invited',
+			'- [[Taylor Example]]',
+			'# Transcript',
+			'![[recording.whisper]]',
+		].join('\n');
+		const write = jest.fn(async (_file: TFile, update: (text: string) => string) => { content = update(content); });
+		handler.app.vault = { read: async () => content, process: write };
+		jest.spyOn(handler, 'expandTranscriptEmbed').mockImplementation(async () => {
+			content = replaceSection(content, 'Transcript', '[Speaker 1]\nOpening.\n\n[Pat Example]\nUpdates.\n\n[Unknown]\nThanks.\n\n[Speaker 2]\nClosing.');
+		});
+		jest.spyOn(handler, 'resolveSpeakers').mockImplementation(async () => {
+			content = content.replace('[Speaker 1]', '[Alex Example]') + '\n[Example, Morgan]\nAgreed.\n\n[alex example]\nThanks.';
+		});
+		jest.spyOn(handler, 'warnIfSpeakerCountMismatch').mockResolvedValue(undefined);
+		jest.spyOn(handler, 'generateSummary').mockResolvedValue(undefined);
+
+		await expect(handler.process(file)).resolves.toBe('complete');
+		expect(getSection(content, 'Attendees')).toBe([
+			'## In Meeting (3)',
+			'- [[Example, Morgan|Morgan Example]]',
+			'- Pat Example',
+			'- Alex Example',
+			'',
+			'## Invited',
+			'- [[Taylor Example]]',
+		].join('\n'));
+
+		await handler.process(file);
+		expect(write).toHaveBeenCalledTimes(1);
 	});
 
 	test('multiple screenshots are all considered and deduped, merged with existing attendees', async () => {

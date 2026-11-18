@@ -10,6 +10,7 @@
  *                 ISO-style:          "YYYY-MM-DD HH:MM"
  *                 Natural language:   "today at H[:MM] AM/PM"
  *   End       – same formats as Start
+ *   Or use separate Start Date / Start Time and End Date / End Time columns.
  *   Organizer – optional "Last, First" name
  *
  * Rows without a recognisable HH:MM–HH:MM time range (all-day events,
@@ -23,22 +24,25 @@ import { ParsedScheduleItem, ParsedSchedule, UnparsedLine } from './parser';
 const GREEN_STANDUP_TITLE = 'Green Team Daily Meeting';
 
 /** Maps flexible header variations to canonical slot names. */
-const HEADER_ALIASES: Record<string, 'subject' | 'start' | 'end' | 'organizer'> = {
+type Column = 'subject' | 'start' | 'end' | 'startDate' | 'startTime' | 'endDate' | 'endTime' | 'organizer';
+type Columns = Partial<Record<Column, number>>;
+
+const HEADER_ALIASES: Partial<Record<string, Column>> = {
 	subject: 'subject',
 	title: 'subject',
 	summary: 'subject',
 	name: 'subject',
 	start: 'start',
-	'start date': 'start',
-	startdate: 'start',
-	starttime: 'start',
-	'start time': 'start',
+	'start date': 'startDate',
+	startdate: 'startDate',
+	starttime: 'startTime',
+	'start time': 'startTime',
 	begin: 'start',
 	end: 'end',
-	'end date': 'end',
-	enddate: 'end',
-	endtime: 'end',
-	'end time': 'end',
+	'end date': 'endDate',
+	enddate: 'endDate',
+	endtime: 'endTime',
+	'end time': 'endTime',
 	finish: 'end',
 	organizer: 'organizer',
 	organiser: 'organizer',
@@ -140,25 +144,55 @@ function splitCsvRow(line: string): string[] {
 	return fields;
 }
 
-/**
- * Returns true for rows that look like all-day or multi-day events:
- * - Start/End time portion is 00:00 (common Exchange all-day sentinel)
- * - Duration spans more than one calendar day
- */
-function isAllDayOrMultiDay(startRaw: string, endRaw: string): boolean {
-	// "YYYY-MM-DD HH:MM" — extract the time portion
-	const startTime = startRaw.trim().split(' ')[1] ?? '';
-	const endTime = endRaw.trim().split(' ')[1] ?? '';
+function readColumns(header: string): Columns {
+	const columns: Columns = {};
+	splitCsvRow(header).forEach((value, i) => {
+		const key = value.trim().toLowerCase();
+		if (!Object.prototype.hasOwnProperty.call(HEADER_ALIASES, key)) return;
+		const column = HEADER_ALIASES[key];
+		if (column && columns[column] === undefined) columns[column] = i;
+	});
+	return columns;
+}
 
-	// All-day: both times are 00:00
-	if (startTime === '00:00' && endTime === '00:00') return true;
+function hasScheduleColumns(columns: Columns): boolean {
+	return columns.subject !== undefined
+		&& (columns.start ?? columns.startDate ?? columns.startTime) !== undefined
+		&& (columns.end ?? columns.endDate ?? columns.endTime) !== undefined;
+}
 
-	// Multi-day: different calendar dates
-	const startDate = startRaw.trim().split(' ')[0] ?? '';
-	const endDate = endRaw.trim().split(' ')[0] ?? '';
-	if (startDate && endDate && startDate !== endDate) return true;
+export function isScheduleCsv(text: string): boolean {
+	return hasScheduleColumns(readColumns(text.trimStart().split(/\r?\n/, 1)[0]));
+}
 
-	return false;
+function normalizeDate(raw: string): string | undefined {
+	const us = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+	const date = us ? `${us[3]}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}` : raw;
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+	const parsed = new Date(`${date}T00:00:00Z`);
+	if (!isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date) return date;
+}
+
+function normalizeSplitTime(raw: string): string | undefined {
+	const time = raw.match(/^(\d{1,2}):(\d{2})\s*([AP]M)?$/i);
+	if (!time) return;
+	const hour = Number(time[1]);
+	const minute = Number(time[2]);
+	const period = time[3]?.toUpperCase();
+	if (minute >= 60 || (period ? hour < 1 || hour > 12 : hour > 23)) return;
+	const hour24 = period ? hour % 12 + (period === 'PM' ? 12 : 0) : hour;
+	return `${String(hour24).padStart(2, '0')}:${time[2]}`;
+}
+
+function readEndpoint(fields: string[], combined?: number, date?: number, time?: number): string {
+	const cell = (index?: number) => index === undefined ? '' : (fields[index] ?? '').trim();
+	if (date !== undefined && time !== undefined) {
+		const day = normalizeDate(cell(date));
+		const hhmm = normalizeSplitTime(cell(time));
+		return day && hhmm ? `${day} ${hhmm}` : '';
+	}
+	// Older exports also use Start Date or Start Time to label a combined cell.
+	return cell(combined ?? date ?? time);
 }
 
 /**
@@ -169,31 +203,21 @@ function isAllDayOrMultiDay(startRaw: string, endRaw: string): boolean {
  * @param csvText   Raw text of the CSV file.
  * @param targetDate  The daily-note date in "YYYY-MM-DD" format. When
  *   provided, rows whose start date doesn't match are still included as
- *   candidates (matching text-import behaviour) but rows with no date at all
- *   are unparsed.
+ *   candidates (matching text-import behaviour).
  */
 export function parseCsvSchedule(csvText: string, _targetDate?: string): ParsedSchedule {
 	const items: ParsedScheduleItem[] = [];
 	const unparsed: UnparsedLine[] = [];
 
-	const lines = csvText.split(/\r?\n/);
-	if (lines.length === 0) return { items, unparsed };
+	const lines = csvText.trimStart().split(/\r?\n/);
 
 	// --- parse header row ---
 	const headerRow = lines[0];
 	if (!headerRow?.trim()) return { items, unparsed };
 
-	const rawHeaders = splitCsvRow(headerRow);
-	const colIndex: Record<string, number> = {};
-	for (let i = 0; i < rawHeaders.length; i++) {
-		const normalised = rawHeaders[i].trim().toLowerCase().replace(/^"|"$/g, '');
-		const canonical = HEADER_ALIASES[normalised];
-		if (canonical && !(canonical in colIndex)) {
-			colIndex[canonical] = i;
-		}
-	}
+	const columns = readColumns(headerRow);
 
-	if (!('subject' in colIndex) || !('start' in colIndex) || !('end' in colIndex)) {
+	if (columns.subject === undefined || !hasScheduleColumns(columns)) {
 		// Can't map essential columns — treat the whole file as unparsed
 		for (let i = 1; i < lines.length; i++) {
 			const raw = lines[i].trim();
@@ -209,11 +233,11 @@ export function parseCsvSchedule(csvText: string, _targetDate?: string): ParsedS
 
 		const fields = splitCsvRow(rawLine);
 
-		const subject = (fields[colIndex['subject']] ?? '').trim();
-		const startRaw = (fields[colIndex['start']] ?? '').trim();
-		const endRaw = (fields[colIndex['end']] ?? '').trim();
-		const organizerRaw = colIndex['organizer'] !== undefined
-			? (fields[colIndex['organizer']] ?? '').trim()
+		const subject = (fields[columns.subject] ?? '').trim();
+		const startRaw = readEndpoint(fields, columns.start, columns.startDate, columns.startTime);
+		const endRaw = readEndpoint(fields, columns.end, columns.endDate, columns.endTime);
+		const organizerRaw = columns.organizer !== undefined
+			? (fields[columns.organizer] ?? '').trim()
 			: '';
 
 		if (!subject || !startRaw || !endRaw) {

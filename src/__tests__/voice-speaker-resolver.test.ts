@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { VoiceSpeakerResolver } from '../voice-speaker-resolver';
 import { TFile } from 'obsidian';
+import { suggestWhisperExports } from '../transcript/whisper-exports';
 
 /**
  * Regression test for the "no speaker popup" bug: identifyWhisperSpeakers() used to
@@ -47,5 +48,18 @@ describe('VoiceSpeakerResolver.resolveWhisperForMeeting', () => {
 		const result = resolver.resolveWhisperForMeeting(meetingFile as any, undefined);
 
 		expect(result).toBe(join(tmpDir, `${meetingBasename}.whisper`));
+	});
+
+	test('suggests timestamped exports within the meeting window before other recordings', async () => {
+		const names = [
+			'Meeting - Teams 2026-11-17 16_02_24.whisper',
+			'Meeting - Teams 2026-11-17 17_45_34.whisper',
+			'Meeting - Teams 2026-11-18 17_20_15.whisper',
+			'Meeting - Teams 2026-11-17 17_01_00.txt',
+		];
+		for (const name of names) writeFileSync(join(tmpDir, name), '');
+		await expect(suggestWhisperExports([tmpDir, join(tmpDir, 'missing')],
+			'2026-11-17 - Project Kick-off', '5:00 PM', '6:00 PM')).resolves.toEqual(
+			[names[1], names[0], names[2]].map(name => join(tmpDir, name)));
 	});
 });

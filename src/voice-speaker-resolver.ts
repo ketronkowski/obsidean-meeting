@@ -1,5 +1,7 @@
 import { App, Notice, TFile } from 'obsidian';
 import { homedir } from 'os';
+import { join } from 'path';
+import { whisperExportDirectories } from './transcript/whisper-exports';
 import { MeetingProcessorSettings } from './ui/settings-tab';
 import { StatusBarManager } from './ui/status-bar';
 import { CopilotWorkingModal } from './ui/copilot-working-modal';
@@ -20,12 +22,12 @@ export class VoiceSpeakerResolver {
 	private app: App;
 	private statusBar: StatusBarManager;
 	private voiceClient: VoiceAnalysisClient;
-	private macWhisperTranscriptsDir: string;
+	private settings: MeetingProcessorSettings;
 
 	constructor(app: App, settings: MeetingProcessorSettings, statusBar: StatusBarManager) {
 		this.app = app;
 		this.statusBar = statusBar;
-		this.macWhisperTranscriptsDir = settings.macWhisperTranscriptsDir ?? '';
+		this.settings = settings;
 		this.voiceClient = new VoiceAnalysisClient({
 			enabled: settings.voiceServiceEnabled,
 			binaryPath: settings.voiceServiceBinaryPath,
@@ -202,11 +204,17 @@ export class VoiceSpeakerResolver {
 	resolveWhisperForMeeting(meetingFile: TFile, rawTranscript?: string): string | null {
 		const { existsSync } = require('fs');
 
-		if (this.macWhisperTranscriptsDir) {
-			const sourceDir = this.macWhisperTranscriptsDir.replace(/^~/, homedir());
+		const embedFilename = rawTranscript
+			? rawTranscript.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim()
+			: '';
+		if (/\.whisper$/i.test(embedFilename)) {
+			if (embedFilename.startsWith('/')) return embedFilename;
+			if (embedFilename.startsWith('~')) return embedFilename.replace(/^~/, homedir());
+		}
+		for (const sourceDir of whisperExportDirectories(this.settings.macWhisperTranscriptsDir ?? '')) {
 
 			// 1. Try meeting basename → same-name .whisper in MacWhisper dir
-			const byName = `${sourceDir}/${meetingFile.basename}.whisper`;
+			const byName = join(sourceDir, `${meetingFile.basename}.whisper`);
 			if (existsSync(byName)) {
 				console.log('[VoiceSpeakerResolver] Found MacWhisper file by meeting name:', byName);
 				return byName;
@@ -214,7 +222,6 @@ export class VoiceSpeakerResolver {
 
 			// 2. Try embed filename in MacWhisper dir
 			if (rawTranscript) {
-				const embedFilename = rawTranscript.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim();
 				if (embedFilename.toLowerCase().endsWith('.whisper')) {
 					const byEmbed = `${sourceDir}/${embedFilename}`;
 					if (existsSync(byEmbed)) {
@@ -226,17 +233,11 @@ export class VoiceSpeakerResolver {
 		}
 
 		// 3. Fall back to vault paths using embed filename
-		const embedFilename = rawTranscript
-			? rawTranscript.replace(/!?\[\[/g, '').replace(/\]\]/g, '').trim()
-			: `${meetingFile.basename}.whisper`;
-
-		if (embedFilename.startsWith('/')) return embedFilename;
-		if (embedFilename.startsWith('~')) return embedFilename.replace(/^~/, homedir());
-
-		if (embedFilename.toLowerCase().endsWith('.whisper')) {
-			const adapter = this.app.vault.adapter as any;
-			if (typeof adapter.getFullPath === 'function') {
-				for (const p of [embedFilename, `Media/${embedFilename}`, `Attachments/${embedFilename}`]) {
+		const vaultFilename = embedFilename || `${meetingFile.basename}.whisper`;
+		if (vaultFilename.toLowerCase().endsWith('.whisper')) {
+			const adapter = this.app.vault.adapter;
+			if (adapter && 'getFullPath' in adapter && typeof adapter.getFullPath === 'function') {
+				for (const p of [vaultFilename, `Media/${vaultFilename}`, `Attachments/${vaultFilename}`]) {
 					const vaultFile = this.app.vault.getAbstractFileByPath(p);
 					if (vaultFile instanceof TFile) {
 						return adapter.getFullPath(vaultFile.path);

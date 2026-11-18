@@ -2,7 +2,7 @@ import { App, Modal, Notice } from 'obsidian';
 import { MeetingProcessorSettings } from './settings-tab';
 import { PeopleManager } from '../people-manager';
 import { parseSchedule } from '../schedule-import/parser';
-import { parseCsvSchedule } from '../schedule-import/parser-csv';
+import { isScheduleCsv, parseCsvSchedule } from '../schedule-import/parser-csv';
 import { ScheduleImportModal } from './schedule-import-modal';
 import * as path from 'path';
 import * as os from 'os';
@@ -56,7 +56,7 @@ export class SchedulePasteModal extends Modal {
 
 		// --- Text paste section ---
 		contentEl.createEl('p', {
-			text: 'Paste your calendar\'s agenda text below. All-day events are ignored automatically.',
+			text: 'Paste your calendar’s agenda text or Outlook CSV below. All-day events won’t create meeting notes.',
 			cls: 'schedule-paste-desc'
 		});
 
@@ -222,7 +222,7 @@ export class SchedulePasteModal extends Modal {
 			return;
 		}
 
-		const { items, unparsed } = parseSchedule(text);
+		const { items, unparsed } = isScheduleCsv(text) ? parseCsvSchedule(text, this.date) : parseSchedule(text);
 		if (items.length === 0 && unparsed.length === 0) {
 			new Notice('No lines found in the pasted text.');
 			return;
