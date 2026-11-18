@@ -22,6 +22,8 @@ import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
+import { suggestWhisperExports, whisperExportDirectories } from '../transcript/whisper-exports';
+import { WhisperExportModal } from '../ui/whisper-export-modal';
 
 export abstract class BaseMeetingHandler {
 	protected app: App;
@@ -48,6 +50,37 @@ export abstract class BaseMeetingHandler {
 		this.peopleManager = new PeopleManager(app);
 		this.statusBar = statusBar;
 		this.voiceResolver = new VoiceSpeakerResolver(app, settings, statusBar);
+	}
+
+	protected async selectWhisperExport(file: TFile): Promise<boolean> {
+		const original = getSection(await this.app.vault.read(file), 'Transcript');
+		if (original.trim()) return false;
+		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+		const paths = await suggestWhisperExports(
+			whisperExportDirectories(this.settings.macWhisperTranscriptsDir ?? ''),
+			file.basename,
+			typeof frontmatter?.start === 'string' ? frontmatter.start : undefined,
+			typeof frontmatter?.end === 'string' ? frontmatter.end : undefined,
+		);
+		if (!paths.length) return false;
+
+		this.statusBar.show('Waiting for transcript selection...', 0);
+		const selected = await new Promise<string | null>(resolve => new WhisperExportModal(this.app, file.basename, paths, resolve).open());
+		if (!selected) return false;
+		if (!paths.includes(selected) || /[\]\r\n]/.test(selected)) {
+			throw new Error('The selected transcript path cannot be embedded.');
+		}
+		const metadata = await this.resolveTranscriptContent(selected, true);
+		if (!metadata || !this.transcriptDetector.detectAndClean(metadata).cleaned.trim()) {
+			throw new Error('The selected MacWhisper export has no readable transcript.');
+		}
+		await this.app.vault.process(file, content => {
+			if (getSection(content, 'Transcript') !== original) {
+				throw new Error('The transcript section changed while the picker was open. Run Process Meeting again.');
+			}
+			return upsertSection(content, 'Transcript', `![[${selected}]]`);
+		});
+		return true;
 	}
 
 	protected async expandTranscriptEmbed(file: TFile): Promise<void> {

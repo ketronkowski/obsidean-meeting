@@ -1,4 +1,5 @@
 import { App } from 'obsidian';
+import { StringDecoder } from 'string_decoder';
 import { MeetingProcessorSettings } from './ui/settings-tab';
 import { CopilotWorkingModal } from './ui/copilot-working-modal';
 
@@ -55,18 +56,52 @@ export class CopilotClientManager {
 		}
 	}
 
-	/**
-	 * Build the CLI args array, prepending `--model <model>` when a model is
-	 * configured (settings.model defaults to 'auto', which the CLI itself
-	 * supports as "let Copilot pick automatically").
-	 */
-	private buildArgs(prompt: string): string[] {
+	private buildArgs(prompt: string, model = this.settings.model, responseOnly = false): string[] {
 		const args: string[] = [];
-		if (this.settings.model) {
-			args.push('--model', this.settings.model);
+		if (model) {
+			args.push('--model', model);
+		}
+		if (responseOnly) {
+			args.push('--output-format', 'json', '--stream', 'off', '--no-color');
 		}
 		args.push('-p', prompt);
 		return args;
+	}
+
+	private parseResponseEvents(stdout: string): string {
+		let response: string | undefined;
+		let completed = false;
+		for (const line of stdout.split('\n').filter(line => line.trim())) {
+			let event: unknown;
+			try {
+				event = JSON.parse(line);
+			} catch {
+				throw new Error('Copilot returned invalid JSON event output.');
+			}
+			if (typeof event !== 'object' || event === null || !('type' in event)) {
+				throw new Error('Copilot returned an invalid response event.');
+			}
+			if (event.type === 'session.error') {
+				throw new Error('Copilot reported a session error.');
+			}
+			if (event.type === 'result') {
+				if (!('exitCode' in event) || event.exitCode !== 0) {
+					throw new Error('Copilot did not complete successfully.');
+				}
+				completed = true;
+			}
+			if (event.type !== 'assistant.message' || !('data' in event)) continue;
+			const data = event.data;
+			if (typeof data !== 'object' || data === null
+				|| !('content' in data) || typeof data.content !== 'string') continue;
+			if ('phase' in data && data.phase !== 'final_answer') continue;
+			if ('toolRequests' in data && Array.isArray(data.toolRequests) && data.toolRequests.length) continue;
+			if ('parentToolCallId' in data && data.parentToolCallId) continue;
+			response = data.content;
+		}
+		if (!completed) throw new Error('Copilot response ended before completion.');
+		if (!response?.trim()) throw new Error('Copilot returned no final assistant response.');
+		return response.trim();
 	}
 
 	/**
@@ -125,11 +160,17 @@ export class CopilotClientManager {
 	 * Send a prompt and wait for complete response.
 	 * Uses the CLI directly via -p flag to avoid SDK stdio/JSON-RPC startup issues.
 	 */
-	async sendPrompt(prompt: string, attachments?: Array<{ type: 'file' | 'directory'; path: string }>, description?: string): Promise<string> {
-		this.showWorking(description || 'Generating response…');
+	async sendPrompt(
+		prompt: string,
+		attachments?: Array<{ type: 'file' | 'directory'; path: string }>,
+		description?: string,
+		options?: { model?: string; showWorking?: boolean; responseOnly?: boolean; signal?: AbortSignal; timeoutMs?: number },
+	): Promise<string> {
+		const showWorking = options?.showWorking !== false;
+		if (showWorking) this.showWorking(description || 'Generating response…');
 		const { spawn } = require('child_process');
 
-		return new Promise((resolve, reject) => {
+		return new Promise<string>((resolve, reject) => {
 			const cliPath = this.settings.copilotCliPath || 'copilot';
 
 			console.log('Sending prompt via CLI:', cliPath);
@@ -141,37 +182,54 @@ export class CopilotClientManager {
 				fullPrompt = `${prompt}\n\n${refs}`;
 			}
 
-			const proc = spawn(cliPath, this.buildArgs(fullPrompt), {
-				stdio: ['pipe', 'pipe', 'pipe']
+			const proc = spawn(cliPath, this.buildArgs(fullPrompt, options?.model, options?.responseOnly), {
+				stdio: [options?.responseOnly ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+				signal: options?.signal,
+				timeout: options?.timeoutMs,
 			});
 
 			let stdout = '';
 			let stderr = '';
+			const decoder = new StringDecoder('utf8');
 
 			proc.stdout.on('data', (data: Buffer) => {
-				stdout += data.toString();
+				stdout += decoder.write(data);
 			});
 
 			proc.stderr.on('data', (data: Buffer) => {
 				stderr += data.toString();
 			});
 
-			proc.on('close', (code: number) => {
-				this.hideWorking();
+			proc.on('close', (code: number | null, signal?: NodeJS.Signals) => {
+				if (options?.signal?.aborted) {
+					reject(new Error('Document search cancelled.'));
+					return;
+				}
+				stdout += decoder.end();
 				if (code !== 0) {
+					if (options?.timeoutMs && signal === 'SIGTERM') {
+						reject(new Error('GitHub Copilot CLI search timed out.'));
+						return;
+					}
 					console.error('CLI error:', stderr);
 					reject(new Error(`CLI exited with code ${code}: ${stderr}`));
 				} else {
-					console.log('Prompt response received, length:', stdout.trim().length);
-					resolve(stdout.trim());
+					try {
+						const response = options?.responseOnly ? this.parseResponseEvents(stdout) : stdout.trim();
+						console.log('Prompt response received, length:', response.length);
+						resolve(response);
+					} catch (error) {
+						reject(error);
+					}
 				}
 			});
 
 			proc.on('error', (error: Error) => {
-				this.hideWorking();
-				console.error('Failed to spawn CLI:', error);
+				if (!options?.signal?.aborted) console.error('Failed to spawn CLI:', error);
 				reject(error);
 			});
+		}).finally(() => {
+			if (showWorking) this.hideWorking();
 		});
 	}
 

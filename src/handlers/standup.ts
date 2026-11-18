@@ -25,7 +25,7 @@ export class StandupMeetingHandler extends BaseMeetingHandler {
 	/**
 	 * Process a standup meeting file
 	 */
-	async process(file: TFile): Promise<void> {
+	async process(file: TFile): Promise<'complete' | 'transcript-not-found'> {
 		console.log('Processing standup meeting:', file.basename);
 
 		try {
@@ -51,14 +51,15 @@ export class StandupMeetingHandler extends BaseMeetingHandler {
 				await this.processPreMeeting(file, boardId, team);
 			}
 
-			if (hasTranscript) {
-				await this.processPostMeeting(file, boardId);
-			} else if (!jiraSectionEmpty) {
-				console.log('Standup: nothing to process (JIRA already populated, no transcript/whisper content found)');
+			if (!hasTranscript && !await this.selectWhisperExport(file)) {
+				console.log('Standup: no transcript or matching MacWhisper export found; skipping post-meeting processing');
+				return 'transcript-not-found';
 			}
 
+			await this.processPostMeeting(file, boardId);
 			this.statusBar.show('Complete!', 2000);
 			console.log('Standup meeting processing complete');
+			return 'complete';
 		} catch (error) {
 			this.statusBar.show('Error processing standup', 3000);
 			throw error;

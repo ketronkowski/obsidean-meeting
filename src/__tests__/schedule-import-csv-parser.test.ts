@@ -1,4 +1,48 @@
-import { parseCsvSchedule } from '../schedule-import/parser-csv';
+import { isScheduleCsv, parseCsvSchedule } from '../schedule-import/parser-csv';
+
+const SPLIT_HEADER = 'Subject,Start Date,Start Time,End Date,End Time,Duration Minutes,Organizer,Location,RSVP';
+
+test('recognizes pasted Outlook CSV and reads separate dates and times with quoted fields and blank lines', () => {
+	const csv = `\uFEFF\n${SPLIT_HEADER}
+
+"Office Hours, India",11/17/2026,5:00 AM,11/17/2026,5:30 AM,30,"Example, Morgan","Microsoft Teams Meeting","Not Responded"
+
+"All Hands",11/17/2026,11:00 AM,11/17/2026,12:00 PM,60,"Example, Sam","Microsoft Teams Meeting","Accepted"
+
+"Busy",11/17/2026,12:00 PM,11/17/2026,1:00 PM,60,"Example, Alex","","Meeting Organizer"
+
+"Green Team Daily Meeting",11/17/2026,1:00 PM,11/17/2026,1:55 PM,55,"Example, Taylor","Microsoft Teams Meeting","Accepted"
+
+"Planning Review",11/17/2026,3:30 PM,11/17/2026,4:00 PM,30,"Example, Jordan","Microsoft Teams Meeting","Accepted"
+
+"Kick-off",11/17/2026,5:00 PM,11/17/2026,6:00 PM,60,"Example, Charlie","Microsoft Teams Meeting","Accepted"
+
+"Time Off",11/16/2026,12:00 AM,11/26/2026,12:00 AM,14400,"Example, Quinn","","Accepted"`;
+	expect(isScheduleCsv(csv)).toBe(true);
+	expect(isScheduleCsv('Planning Review — 3:30 PM–4:00 PM')).toBe(false);
+	const { items, unparsed } = parseCsvSchedule(csv, '2026-11-17');
+	expect(items.map(({ title, startTime, endTime }) => [title, startTime, endTime])).toEqual([
+		['Office Hours, India', '5:00 AM', '5:30 AM'],
+		['All Hands', '11:00 AM', '12:00 PM'],
+		['Busy', '12:00 PM', '1:00 PM'],
+		['Green Team Daily Meeting', '1:00 PM', '1:55 PM'],
+		['Planning Review', '3:30 PM', '4:00 PM'],
+		['Kick-off', '5:00 PM', '6:00 PM'],
+	]);
+	expect(items[0].organizer).toBe('Example, Morgan');
+	expect(items[3].isGreenStandup).toBe(true);
+	expect(unparsed).toEqual([{ rawLine: expect.stringContaining('"Time Off"') }]);
+});
+
+test('rejects invalid split dates or times without losing a valid midnight event', () => {
+	const { items, unparsed } = parseCsvSchedule(`Subject,Start Date,Start Time,End Date,End Time
+Invalid date,2/30/2026,9:00 AM,2/30/2026,10:00 AM
+Invalid time,11/17/2026,13:00 PM,11/17/2026,2:00 PM
+Overnight,11/17/2026,11:00 PM,11/18/2026,1:00 AM
+Midnight call,11/17/2026,12:00 AM,2026-11-17,00:30`);
+	expect(items).toEqual([expect.objectContaining({ title: 'Midnight call', startTime: '12:00 AM', endTime: '12:30 AM' })]);
+	expect(unparsed).toHaveLength(3);
+});
 
 // Sample matching the real Exchange CSV format from the example file.
 const SAMPLE_CSV = `Subject,Start,End,Organizer

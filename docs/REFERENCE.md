@@ -451,7 +451,7 @@ Status emoji: ✅ done/closed · 🟢 in-progress · 🟡 review/testing · 🔴
 
 | Field | Default | Purpose |
 |-------|---------|---------|
-| `model` | `auto` | Copilot model, passed as `--model` to every CLI spawn |
+| `model` | `fusion` | Copilot model for processing; vault search always uses `--model fusion` |
 | `copilotCliPath` | `copilot` | path to CLI binary |
 | `dailyNotesFolder` | `Daily Notes` | daily-note detection |
 | `meetingsFolder` | `Meetings` | meeting detection |

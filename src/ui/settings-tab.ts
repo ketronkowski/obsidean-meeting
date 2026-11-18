@@ -5,6 +5,8 @@ export interface MeetingProcessorSettings {
 	// AI Settings
 	model: string;
 	copilotCliPath: string;
+	documentSearchResultLimit: number;
+	backgroundScreenshotEnrichment: boolean;
 	
 	// Vault Paths
 	dailyNotesFolder: string;
@@ -42,8 +44,10 @@ export interface MeetingProcessorSettings {
 }
 
 export const DEFAULT_SETTINGS: MeetingProcessorSettings = {
-	model: 'auto',
+	model: 'fusion',
 	copilotCliPath: 'copilot', // Will be auto-detected or set by user
+	documentSearchResultLimit: 10,
+	backgroundScreenshotEnrichment: false,
 	dailyNotesFolder: 'Daily Notes',
 	meetingsFolder: 'Meetings',
 	notesFolder: 'Notes',
@@ -86,8 +90,9 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName('Model')
-			.setDesc('AI model to use for processing (passed to `copilot --model`)')
+			.setDesc('AI model to use for processing (default: Fusion). Vault search always uses Fusion.')
 			.addDropdown(dropdown => dropdown
+				.addOption('fusion', 'Fusion (default)')
 				.addOption('auto', 'Auto (let Copilot pick)')
 				.addOption('claude-sonnet-4.5', 'Claude Sonnet 4.5')
 				.addOption('claude-opus-4.5', 'Claude Opus 4.5')
@@ -107,6 +112,30 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				.setValue(this.plugin.settings.copilotCliPath)
 				.onChange(async (value) => {
 					this.plugin.settings.copilotCliPath = value || 'copilot';
+					await this.plugin.saveSettings();
+				}));
+
+		containerEl.createEl('h2', { text: 'Document Search' });
+
+		new Setting(containerEl)
+			.setName('Maximum search results')
+			.setDesc('Number of ranked documents to show in the search dialog (default: 10).')
+			.addSlider(slider => slider
+				.setLimits(1, 50, 1)
+				.setValue(this.plugin.settings.documentSearchResultLimit)
+				.setDynamicTooltip()
+				.onChange(async value => {
+					this.plugin.settings.documentSearchResultLimit = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Cache screenshot descriptions in the background')
+			.setDesc('Sends at most one new or changed embedded image to GitHub Copilot CLI every 15 minutes while Obsidian is open. Descriptions stay in the local search cache. Off by default.')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.backgroundScreenshotEnrichment === true)
+				.onChange(async value => {
+					this.plugin.settings.backgroundScreenshotEnrichment = value;
 					await this.plugin.saveSettings();
 				}));
 
@@ -376,7 +405,7 @@ export class MeetingProcessorSettingTab extends PluginSettingTab {
 				.setButtonText('Reset')
 				.setWarning()
 				.onClick(async () => {
-					this.plugin.settings = Object.assign({}, DEFAULT_SETTINGS);
+					Object.assign(this.plugin.settings, DEFAULT_SETTINGS);
 					await this.plugin.saveSettings();
 					this.display(); // Refresh display
 				}));
