@@ -22,7 +22,7 @@ import * as mammoth from 'mammoth';
 import * as JSZip from 'jszip';
 import { readFile } from 'fs/promises';
 import { homedir } from 'os';
-import { suggestWhisperExports, whisperExportDirectories } from '../transcript/whisper-exports';
+import { findWhisperExports, whisperExportDirectories } from '../transcript/whisper-exports';
 import { WhisperExportModal } from '../ui/whisper-export-modal';
 
 export abstract class BaseMeetingHandler {
@@ -56,7 +56,7 @@ export abstract class BaseMeetingHandler {
 		const original = getSection(await this.app.vault.read(file), 'Transcript');
 		if (original.trim()) return false;
 		const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
-		const paths = await suggestWhisperExports(
+		const { paths, automatic } = await findWhisperExports(
 			whisperExportDirectories(this.settings.macWhisperTranscriptsDir ?? ''),
 			file.basename,
 			typeof frontmatter?.start === 'string' ? frontmatter.start : undefined,
@@ -64,15 +64,20 @@ export abstract class BaseMeetingHandler {
 		);
 		if (!paths.length) return false;
 
-		this.statusBar.show('Waiting for transcript selection...', 0);
-		const selected = await new Promise<string | null>(resolve => new WhisperExportModal(this.app, file.basename, paths, resolve).open());
-		if (!selected) return false;
-		if (!paths.includes(selected) || /[\]\r\n]/.test(selected)) {
-			throw new Error('The selected transcript path cannot be embedded.');
-		}
-		const metadata = await this.resolveTranscriptContent(selected, true);
-		if (!metadata || !this.transcriptDetector.detectAndClean(metadata).cleaned.trim()) {
-			throw new Error('The selected MacWhisper export has no readable transcript.');
+		let selected: string | null = null;
+		if (automatic && !/[\]\r\n]/.test(automatic) && await this.hasReadableWhisperTranscript(automatic)) {
+			console.log('[selectWhisperExport] Auto-selected the only export recorded during the meeting:', automatic);
+			selected = automatic;
+		} else {
+			this.statusBar.show('Waiting for transcript selection...', 0);
+			selected = await new Promise<string | null>(resolve => new WhisperExportModal(this.app, file.basename, paths, resolve).open());
+			if (!selected) return false;
+			if (!paths.includes(selected) || /[\]\r\n]/.test(selected)) {
+				throw new Error('The selected transcript path cannot be embedded.');
+			}
+			if (!await this.hasReadableWhisperTranscript(selected)) {
+				throw new Error('The selected MacWhisper export has no readable transcript.');
+			}
 		}
 		await this.app.vault.process(file, content => {
 			if (getSection(content, 'Transcript') !== original) {
@@ -81,6 +86,11 @@ export abstract class BaseMeetingHandler {
 			return upsertSection(content, 'Transcript', `![[${selected}]]`);
 		});
 		return true;
+	}
+
+	private async hasReadableWhisperTranscript(path: string): Promise<boolean> {
+		const metadata = await this.resolveTranscriptContent(path, true);
+		return !!metadata && !!this.transcriptDetector.detectAndClean(metadata).cleaned.trim();
 	}
 
 	protected async expandTranscriptEmbed(file: TFile): Promise<void> {

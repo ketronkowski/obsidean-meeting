@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { VoiceSpeakerResolver } from '../voice-speaker-resolver';
 import { TFile } from 'obsidian';
-import { suggestWhisperExports } from '../transcript/whisper-exports';
+import { findWhisperExports, suggestWhisperExports } from '../transcript/whisper-exports';
 
 /**
  * Regression test for the "no speaker popup" bug: identifyWhisperSpeakers() used to
@@ -61,5 +61,32 @@ describe('VoiceSpeakerResolver.resolveWhisperForMeeting', () => {
 		await expect(suggestWhisperExports([tmpDir, join(tmpDir, 'missing')],
 			'2026-11-17 - Project Kick-off', '5:00 PM', '6:00 PM')).resolves.toEqual(
 			[names[1], names[0], names[2]].map(name => join(tmpDir, name)));
+	});
+
+	describe('findWhisperExports automatic selection', () => {
+		const meeting = '2026-11-19 - Estimator tool integration in SIC';
+		const write = (...names: string[]) => names.forEach(name => writeFileSync(join(tmpDir, name), ''));
+
+		test('auto-selects the only same-day export stamped inside the meeting window', async () => {
+			write('Meeting - Teams 2026-11-19 10_45_34.whisper', 'Meeting - Teams 2026-11-18 16_06_02.whisper',
+				'Meeting - Teams 2026-11-19 13_02_00.whisper', '2026-11-12 - SIC Weekly Program Meeting.whisper');
+			await expect(findWhisperExports([tmpDir], meeting, '10:30 AM', '11:00 AM')).resolves.toMatchObject({
+				automatic: join(tmpDir, 'Meeting - Teams 2026-11-19 10_45_34.whisper'),
+			});
+		});
+
+		test('prompts instead of guessing when several exports fall inside the window', async () => {
+			write('Meeting - Teams 2026-11-19 10_31_00.whisper', 'Meeting - Teams 2026-11-19 10_45_34.whisper');
+			const result = await findWhisperExports([tmpDir], meeting, '10:30 AM', '11:00 AM');
+			expect(result.automatic).toBeUndefined();
+			expect(result.paths).toHaveLength(2);
+		});
+
+		test('does not auto-select an export stamped at the end boundary, on another day, or without meeting times', async () => {
+			write('Meeting - Teams 2026-11-19 11_00_00.whisper', 'Meeting - Teams 2026-11-18 10_45_00.whisper');
+			await expect(findWhisperExports([tmpDir], meeting, '10:30 AM', '11:00 AM')).resolves.toMatchObject({ automatic: undefined });
+			write('Meeting - Teams 2026-11-19 10_45_34.whisper');
+			await expect(findWhisperExports([tmpDir], meeting)).resolves.toMatchObject({ automatic: undefined });
+		});
 	});
 });

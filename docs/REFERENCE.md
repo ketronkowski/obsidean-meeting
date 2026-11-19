@@ -161,6 +161,13 @@ treated as seconds). `speaker` is a **dict**, not a bare string.
 2. `{macWhisperTranscriptsDir}/{embed filename}`
 3. vault paths (`<name>`, `Media/<name>`, `Attachments/<name>`) → absolute path via the vault adapter.
 
+If none of these exist and `# Transcript` is empty, `selectWhisperExport` scans
+`macWhisperTranscriptsDir` plus `~/Documents/Mac Whisper/Auto Exported`
+(`src/transcript/whisper-exports.ts`). It embeds an export automatically only when
+exactly one filename timestamp is on the meeting date inside the frontmatter
+`[start, end)` window and the export has readable transcript text; zero or multiple
+matches open the `WhisperExportModal` picker instead of guessing.
+
 The MacWhisper directory is preferred because those files carry the *latest* speaker
 names; vault copies may be stale.
 

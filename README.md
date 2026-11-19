@@ -183,9 +183,11 @@ Meetings with "Green Standup" in the filename.
 
 When the transcript section is empty, both meeting types look in the configured
 MacWhisper Transcripts Directory and `~/Documents/Mac Whisper/Auto Exported`.
-If there is no exact filename match, choose a `.whisper` export from the dialog.
-Exports within the note's scheduled time range appear first when the filename
-includes a timestamp. Skipping the dialog leaves the transcript unchanged;
+If there is no exact filename match and exactly one export's filename timestamp
+(e.g. `Meeting - Teams 2026-11-19 10_45_34.whisper`) falls on the meeting date
+within the note's `start`–`end` range (end exclusive), that export is embedded
+automatically. Otherwise choose a `.whisper` export from the dialog; exports
+within the scheduled time range appear first. Skipping the dialog leaves the transcript unchanged;
 JIRA can still be populated for standups.
 
 **Post-meeting mode** (`# Transcript` has content):

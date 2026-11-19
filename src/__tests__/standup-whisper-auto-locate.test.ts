@@ -29,6 +29,11 @@ import { CopilotClientManager } from '../copilot-client';
 import { SkillLoader } from '../skill-loader';
 import { StatusBarManager } from '../ui/status-bar';
 import { StandupMeetingHandler } from '../handlers/standup';
+import { WhisperExportModal } from '../ui/whisper-export-modal';
+
+jest.mock('../ui/whisper-export-modal', () => ({
+	WhisperExportModal: jest.fn().mockImplementation((_app, _meeting, _paths, finish) => ({ open: () => finish(null) })),
+}));
 
 const fakeApp = {} as App;
 
@@ -287,3 +292,46 @@ describe('StandupMeetingHandler.processPostMeeting — JIRA-update order guard',
 		]);
 	});
 });
+
+describe('selectWhisperExport — automatic MacWhisper export selection', () => {
+	let tmpDir: string;
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), 'macwhisper-select-'));
+		// Keep the always-scanned ~/Documents/Mac Whisper/Auto Exported directory out of the real home.
+		jest.spyOn(require('os'), 'homedir').mockReturnValue(tmpDir);
+		(WhisperExportModal as unknown as jest.Mock).mockClear();
+	});
+	afterEach(() => {
+		jest.restoreAllMocks();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function setup(names: string[]) {
+		for (const name of names) writeFileSync(join(tmpDir, name), '');
+		const handler = buildHandler({ macWhisperTranscriptsDir: tmpDir });
+		let note = '---\ntags:\n  - meeting\n---\n# Attendees\n\n# Transcript\n\n';
+		handler.app = {
+			vault: {
+				read: async () => note,
+				process: async (_f: TFile, fn: (c: string) => string) => { note = fn(note); return note; },
+			},
+			metadataCache: { getFileCache: () => ({ frontmatter: { start: '10:30 AM', end: '11:00 AM' } }) },
+		};
+		jest.spyOn(handler, 'hasReadableWhisperTranscript').mockResolvedValue(true);
+		return { handler, note: () => note };
+	}
+
+	it('embeds the only export recorded during the meeting without opening the picker', async () => {
+		const { handler, note } = setup(['Meeting - Teams 2026-11-19 10_45_34.whisper', 'Meeting - Teams 2026-11-18 16_06_02.whisper']);
+		await expect(handler.selectWhisperExport(makeFile('2026-11-19 - Estimator tool integration in SIC'))).resolves.toBe(true);
+		expect(WhisperExportModal).not.toHaveBeenCalled();
+		expect(note()).toContain(`![[${join(tmpDir, 'Meeting - Teams 2026-11-19 10_45_34.whisper')}]]`);
+	});
+
+	it('still opens the picker when the match is ambiguous', async () => {
+		const { handler } = setup(['Meeting - Teams 2026-11-19 10_31_00.whisper', 'Meeting - Teams 2026-11-19 10_45_34.whisper']);
+		await expect(handler.selectWhisperExport(makeFile('2026-11-19 - Estimator tool integration in SIC'))).resolves.toBe(false);
+		expect(WhisperExportModal).toHaveBeenCalledTimes(1);
+	});
+});
+
